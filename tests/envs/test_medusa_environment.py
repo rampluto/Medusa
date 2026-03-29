@@ -446,3 +446,146 @@ class TestMedusaEnvironment:
         log = env._tables.governance_log
         assert len(log) == 2
         assert log[0]["action"] == "SYNC_CHECK"
+
+
+# ---------------------------------------------------------------------------
+# Task Scorer
+# ---------------------------------------------------------------------------
+
+from envs.medusa_env.tasks import TASKS, score_episode
+
+
+class TestMedusaTasks:
+    """Tests for the 3 formal task definitions and 0.0–1.0 scorer."""
+
+    def test_three_tasks_defined(self):
+        assert "clean_pipeline" in TASKS
+        assert "dirty_integration" in TASKS
+        assert "full_medallion" in TASKS
+
+    def test_task_difficulties(self):
+        assert TASKS["clean_pipeline"].difficulty == "easy"
+        assert TASKS["dirty_integration"].difficulty == "medium"
+        assert TASKS["full_medallion"].difficulty == "hard"
+
+    def test_task_seeds_match_scenarios(self):
+        assert TASKS["clean_pipeline"].seed == 0
+        assert TASKS["dirty_integration"].seed == 1
+        assert TASKS["full_medallion"].seed == 2
+
+    def _run_happy_path(self, seed: int) -> MedusaState:
+        """Run the optimal action sequence for the given seed and return final state."""
+        env = MedusaEnv(n_fact_rows=50, n_dim_rows=40)
+        env.reset(seed=seed)
+        for act in [
+            MedusaActionType.SYNC_CHECK,
+            MedusaActionType.EVOLVE_SCHEMA,
+            MedusaActionType.PREP_KEYS_A,
+            MedusaActionType.PREP_KEYS_B,
+            MedusaActionType.DEDUPLICATE_B,
+            MedusaActionType.EXECUTE_JOIN_LEFT,
+            MedusaActionType.APPLY_SCD_2,
+            MedusaActionType.COMMIT,
+        ]:
+            env.step(MedusaAction(action=act))
+        return env.state
+
+    # ── clean_pipeline (easy) ───────────────────────────────────────────────
+
+    def test_clean_pipeline_score_is_in_range(self):
+        state = self._run_happy_path(seed=0)
+        result = score_episode("clean_pipeline", state)
+        assert 0.0 <= result.score <= 1.0
+
+    def test_clean_pipeline_happy_path_passes(self):
+        state = self._run_happy_path(seed=0)
+        result = score_episode("clean_pipeline", state)
+        assert result.passed is True
+        assert result.grade in ("S", "A", "B")
+
+    def test_clean_pipeline_uncommitted_scores_zero(self):
+        state = MedusaState(stage="running")
+        result = score_episode("clean_pipeline", state)
+        assert result.score == 0.0
+        assert result.grade == "F"
+
+    def test_clean_pipeline_explosion_detected_lowers_score(self):
+        state = MedusaState(
+            stage="committed",
+            explosion_detected=True,
+            silver_row_count=0,
+            source_a_row_count=50,
+            match_rate=0.0,
+            grader_passed=False,
+        )
+        result = score_episode("clean_pipeline", state)
+        assert result.breakdown["no_explosion"] == 0.0
+
+    # ── dirty_integration (medium) ──────────────────────────────────────────
+
+    def test_dirty_integration_score_is_in_range(self):
+        state = self._run_happy_path(seed=1)
+        result = score_episode("dirty_integration", state)
+        assert 0.0 <= result.score <= 1.0
+
+    def test_dirty_integration_without_prep_penalized(self):
+        state = MedusaState(
+            stage="committed",
+            did_prep_a=False,
+            did_prep_b=False,
+            did_dedup_b=False,
+            did_join=True,
+            explosion_detected=False,
+            grader_passed=False,
+        )
+        result = score_episode("dirty_integration", state)
+        assert result.breakdown["prepped_before_join"] == 0.0
+        assert result.breakdown["deduped_before_join"] == 0.0
+
+    def test_dirty_integration_with_all_prereqs_scores_higher(self):
+        state_no_prep = MedusaState(
+            stage="committed", did_prep_a=False, did_prep_b=False,
+            did_dedup_b=False, did_join=True, explosion_detected=False, grader_passed=False,
+        )
+        state_prepped = MedusaState(
+            stage="committed", did_prep_a=True, did_prep_b=True,
+            did_dedup_b=True, did_join=True, explosion_detected=False, grader_passed=True,
+        )
+        no_prep = score_episode("dirty_integration", state_no_prep)
+        prepped = score_episode("dirty_integration", state_prepped)
+        assert prepped.score > no_prep.score
+
+    # ── full_medallion (hard) ───────────────────────────────────────────────
+
+    def test_full_medallion_score_is_in_range(self):
+        state = self._run_happy_path(seed=2)
+        result = score_episode("full_medallion", state)
+        assert 0.0 <= result.score <= 1.0
+
+    def test_full_medallion_without_sync_penalized(self):
+        state = MedusaState(
+            stage="committed",
+            did_sync_check=False,
+            did_evolve_schema=True,
+            scd_type="SCD-2",
+            grader_passed=True,
+        )
+        result = score_episode("full_medallion", state)
+        assert result.breakdown["sync_checked"] == 0.0
+
+    def test_full_medallion_scd1_penalized(self):
+        state_scd1 = MedusaState(
+            stage="committed", did_sync_check=True,
+            did_evolve_schema=True, scd_type="SCD-1", grader_passed=False,
+        )
+        state_scd2 = MedusaState(
+            stage="committed", did_sync_check=True,
+            did_evolve_schema=True, scd_type="SCD-2", grader_passed=True,
+        )
+        r1 = score_episode("full_medallion", state_scd1)
+        r2 = score_episode("full_medallion", state_scd2)
+        assert r2.score > r1.score
+
+    def test_unknown_task_raises(self):
+        with pytest.raises(ValueError, match="Unknown task_id"):
+            score_episode("nonexistent_task", MedusaState(stage="committed"))
