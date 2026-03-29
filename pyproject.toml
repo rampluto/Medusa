@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openenv-medusa"
+version = "0.2.0"
+description = "MEDUSA: Medallion-Engineered Deterministic Unified Storage Agent — Bronze→Silver RL environment for OpenEnv"
+requires-python = ">=3.10"
+dependencies = [
+    # Core OpenEnv dependencies
+    "openenv-core[core]>=0.2.2",
+    "fastapi>=0.115.0",
+    "pydantic>=2.0.0",
+    "uvicorn>=0.24.0",
+    # Data pipeline dependencies
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+# Enables: uv run server  (from the medusa_env directory)
+server = "server.app:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = ["medusa_env", "medusa_env.server", "server"]
+package-dir = { "medusa_env" = ".", "server" = "server" }
+
+[tool.setuptools.package-data]
+medusa_env = ["**/*.yaml", "**/*.yml"]
