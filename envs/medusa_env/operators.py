@@ -222,7 +222,7 @@ def apply_scd(
     SCD-2: close old records (valid_to = now) and insert new ones with
            a new valid_from / valid_to = None (open record).
     """
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     inserts = 0
     updates = 0
 

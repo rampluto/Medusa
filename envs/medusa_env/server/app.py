@@ -10,17 +10,23 @@ Usage:
 
 from __future__ import annotations
 
-# Support both in-repo and standalone imports
+# Support three import contexts:
+#   1. In-repo (from OpenEnv root): relative imports via `..`
+#   2. Standalone installed (uv run server): medusa_env.* package
+#   3. Direct execution inside env dir: bare module names
 try:
     from openenv.core.env_server.http_server import create_app
-
     from ..medusa_env import MedusaEnv
     from ..models import MedusaAction, MedusaObservation
 except ImportError:
-    from openenv.core.env_server.http_server import create_app
-
-    from medusa_env import MedusaEnv
-    from models import MedusaAction, MedusaObservation
+    try:
+        from openenv.core.env_server.http_server import create_app
+        from medusa_env import MedusaEnv
+        from medusa_env.models import MedusaAction, MedusaObservation
+    except ImportError:
+        from openenv.core.env_server.http_server import create_app
+        from medusa_env import MedusaEnv  # type: ignore[no-redef]
+        from models import MedusaAction, MedusaObservation  # type: ignore[no-redef]
 
 app = create_app(
     MedusaEnv,
