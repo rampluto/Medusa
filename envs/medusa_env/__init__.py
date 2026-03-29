@@ -9,6 +9,7 @@ Full Bronze→Silver integration controller with:
 - Deterministic post-commit grader
 """
 
+from .client import medusa_env
 from .grader import Grader, GraderResult
 from .medusa_env import MedusaEnv
 from .models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
@@ -16,6 +17,7 @@ from .rewards import RewardEngine
 from .scenarios import Scenario, ScenarioGenerator
 
 __all__ = [
+    "medusa_env",
     "MedusaEnv",
     "MedusaAction",
     "MedusaActionType",
