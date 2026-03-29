@@ -1,3 +1,17 @@
+---
+title: MEDUSA Environment
+emoji: 🦑
+colorFrom: purple
+colorTo: blue
+sdk: docker
+pinned: false
+tags:
+  - openenv
+  - reinforcement-learning
+  - data-engineering
+app_port: 7860
+---
+
 # MEDUSA
 
 **Medallion-Engineered Deterministic Unified Storage Agent**

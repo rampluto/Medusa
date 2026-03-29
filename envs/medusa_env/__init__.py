@@ -15,6 +15,7 @@ from .medusa_env import MedusaEnv
 from .models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
 from .rewards import RewardEngine
 from .scenarios import Scenario, ScenarioGenerator
+from .tasks import TASKS, Task, TaskResult, score_episode
 
 __all__ = [
     "medusa_env",
@@ -28,4 +29,8 @@ __all__ = [
     "RewardEngine",
     "Grader",
     "GraderResult",
+    "TASKS",
+    "Task",
+    "TaskResult",
+    "score_episode",
 ]
