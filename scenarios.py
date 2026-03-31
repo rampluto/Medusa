@@ -85,7 +85,10 @@ def _make_dim(
     if match_keys:
         # Choose from overlap pool to control referential integrity
         available = list(match_keys)
-        keys = [rng.choice(available) for _ in range(n_rows)]
+        if len(available) >= n_rows:
+            keys = rng.sample(available, n_rows)
+        else:
+            keys = [rng.choice(available) for _ in range(n_rows)]
     else:
         keys = [f"K{i:04d}" for i in rng.sample(range(1, n_rows * 3), n_rows)]
 
@@ -213,3 +216,4 @@ class ScenarioGenerator:
                 new_cols_a=extra_a, new_cols_b=extra_b,
                 description="Schema drift: new columns in A and B.",
             )
+        

@@ -4,13 +4,12 @@ Runs an LLM agent (via OpenAI-compatible API) against all three MEDUSA tasks
 and reports per-task scores (0.0–1.0).
 
 Required environment variables:
-    API_BASE_URL   The API endpoint for the LLM (OpenAI-compatible).
+    API_BASE_URL   The API endpoint for the LLM (OpenAI-compatible). Defaults to https://router.huggingface.co/v1
     MODEL_NAME     The model identifier to use for inference.
-    HF_TOKEN       Your Hugging Face / API key (used as the API key).
+    HF_TOKEN       Your Hugging Face / API key (also accepts API_KEY).
 
 Usage:
-    export API_BASE_URL="https://api.openai.com/v1"
-    export MODEL_NAME="gpt-4o-mini"
+    export MODEL_NAME="meta-llama/Llama-3.3-70B-Instruct"
     export HF_TOKEN="hf-..."
     python inference.py
 
@@ -32,14 +31,14 @@ from typing import List, Optional
 # Validate required environment variables before anything else
 # ---------------------------------------------------------------------------
 
-API_BASE_URL = os.environ.get("API_BASE_URL", "").rstrip("/")
-MODEL_NAME = os.environ.get("MODEL_NAME", "")
-HF_TOKEN = os.environ.get("HF_TOKEN", "")
+API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME")
 
 _missing = [k for k, v in {
     "API_BASE_URL": API_BASE_URL,
     "MODEL_NAME": MODEL_NAME,
-    "HF_TOKEN": HF_TOKEN,
+    "API_KEY (or HF_TOKEN)": API_KEY,
 }.items() if not v]
 
 if _missing:
@@ -57,7 +56,7 @@ from openai import OpenAI  # noqa: E402
 
 client = OpenAI(
     base_url=API_BASE_URL,
-    api_key=HF_TOKEN,
+    api_key=API_KEY,
 )
 
 # ---------------------------------------------------------------------------
@@ -155,8 +154,9 @@ def choose_action(
     response = client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
-        max_tokens=20,
-        temperature=0.0,
+        # max_tokens=20,
+        max_completion_tokens=256,
+        temperature=0.1,
     )
     raw = response.choices[0].message.content.strip().upper().replace(" ", "_")
 
@@ -286,3 +286,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    

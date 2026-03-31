@@ -22,18 +22,32 @@ import pandas as pd
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import EnvironmentMetadata
 
-from medusa_env.grader import Grader
-from medusa_env.models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
-from medusa_env.operators import (
-    apply_scd,
-    deduplicate,
-    evolve_schema,
-    execute_join,
-    prep_keys,
-    sync_check,
-)
-from medusa_env.rewards import RewardEngine
-from medusa_env.scenarios import Scenario, ScenarioGenerator
+try:
+    from .grader import Grader
+    from .models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+    from .operators import (
+        apply_scd,
+        deduplicate,
+        evolve_schema,
+        execute_join,
+        prep_keys,
+        sync_check,
+    )
+    from .rewards import RewardEngine
+    from .scenarios import Scenario, ScenarioGenerator
+except ImportError:
+    from grader import Grader
+    from models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+    from operators import (
+        apply_scd,
+        deduplicate,
+        evolve_schema,
+        execute_join,
+        prep_keys,
+        sync_check,
+    )
+    from rewards import RewardEngine
+    from scenarios import Scenario, ScenarioGenerator
 
 
 # ---------------------------------------------------------------------------
