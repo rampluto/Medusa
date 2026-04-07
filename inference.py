@@ -34,7 +34,7 @@ from typing import List, Optional
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "mock-key"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
-TASK_NAME = os.getenv("TASK_NAME", "clean_pipeline")
+TASK_NAME = os.getenv("TASK_NAME", "all")
 BENCHMARK = os.getenv("BENCHMARK", "medusa_env")
 
 _missing = [k for k, v in {
@@ -200,7 +200,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
 # Run one task
 # ---------------------------------------------------------------------------
 
-def run_task(task_id: str, max_steps: int = 15) -> None:
+def run_task(task_id: str, max_steps: int = 15) -> TaskResult:
     """Run the LLM agent for one MEDUSA task using required hackathon STDOUT format."""
     log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
     
@@ -213,6 +213,14 @@ def run_task(task_id: str, max_steps: int = 15) -> None:
     step = 0
     success = False
     score = 0.0
+    result = TaskResult(
+        task_id=task_id,
+        score=0.0,
+        grade="F",
+        breakdown={},
+        passed=False,
+        notes=[],
+    )
 
     try:
         while not obs.done and step < max_steps:
@@ -251,6 +259,7 @@ def run_task(task_id: str, max_steps: int = 15) -> None:
         log_step(step=step+1 if step > 0 else 1, action="ERROR", reward=0.0, done=True, error=str(e))
     finally:
         log_end(success=success, steps=step, score=score, rewards=rewards_list)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -258,8 +267,13 @@ def run_task(task_id: str, max_steps: int = 15) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    # Do not loop task variants anymore; run dynamically via TASK_NAME
-    run_task(TASK_NAME)
+    if TASK_NAME.lower() == "all":
+        results = [run_task(task_id) for task_id in TASKS]
+        all_passed = all(result.score >= 0.35 for result in results)
+        sys.exit(0 if all_passed else 1)
+
+    else:
+        run_task(TASK_NAME)
 
 if __name__ == "__main__":
     main()
