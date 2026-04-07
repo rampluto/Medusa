@@ -24,6 +24,22 @@ tasks:
       volume_ok: 0.20
       high_match: 0.20
       grader_pass: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.20
+        - id: no_explosion
+          weight: 0.25
+        - id: volume_ok
+          weight: 0.20
+        - id: high_match
+          weight: 0.20
+        - id: grader_pass
+          weight: 0.15
   - id: dirty_integration
     name: Dirty Key Integration
     difficulty: medium
@@ -46,6 +62,24 @@ tasks:
       no_explosion: 0.25
       integrity_ok: 0.15
       grader_pass: 0.10
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.10
+        - id: prepped_before_join
+          weight: 0.20
+        - id: deduped_before_join
+          weight: 0.20
+        - id: no_explosion
+          weight: 0.25
+        - id: integrity_ok
+          weight: 0.15
+        - id: grader_pass
+          weight: 0.10
   - id: full_medallion
     name: Full Medallion Integration
     difficulty: hard
@@ -68,6 +102,24 @@ tasks:
       used_scd2: 0.20
       schema_ok: 0.20
       grader_pass: 0.25
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.05
+        - id: sync_checked
+          weight: 0.15
+        - id: schema_evolved
+          weight: 0.15
+        - id: used_scd2
+          weight: 0.20
+        - id: schema_ok
+          weight: 0.20
+        - id: grader_pass
+          weight: 0.25
   - id: schema_bootstrap
     name: Schema Bootstrap
     difficulty: easy
@@ -87,6 +139,22 @@ tasks:
       schema_evolved: 0.25
       schema_materialized: 0.20
       silver_built: 0.20
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.15
+        - id: no_explosion
+          weight: 0.20
+        - id: schema_evolved
+          weight: 0.25
+        - id: schema_materialized
+          weight: 0.20
+        - id: silver_built
+          weight: 0.20
   - id: dedup_guardrail
     name: Dedup Guardrail
     difficulty: medium
@@ -108,6 +176,24 @@ tasks:
       no_explosion: 0.25
       silver_built: 0.10
       grader_pass: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.10
+        - id: prepped_before_join
+          weight: 0.15
+        - id: deduped_before_join
+          weight: 0.25
+        - id: no_explosion
+          weight: 0.25
+        - id: silver_built
+          weight: 0.10
+        - id: grader_pass
+          weight: 0.15
   - id: stale_sync_recovery
     name: Stale Sync Recovery
     difficulty: hard
@@ -129,6 +215,24 @@ tasks:
       high_match: 0.15
       silver_built: 0.15
       grader_pass: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.05
+        - id: sync_checked
+          weight: 0.30
+        - id: no_explosion
+          weight: 0.20
+        - id: high_match
+          weight: 0.15
+        - id: silver_built
+          weight: 0.15
+        - id: grader_pass
+          weight: 0.15
   - id: fresh_join_baseline
     name: Fresh Join Baseline
     difficulty: easy
@@ -149,6 +253,22 @@ tasks:
       high_match: 0.25
       silver_built: 0.20
       efficient_run: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.15
+        - id: no_explosion
+          weight: 0.25
+        - id: high_match
+          weight: 0.25
+        - id: silver_built
+          weight: 0.20
+        - id: efficient_run
+          weight: 0.15
   - id: stale_history_guard
     name: Stale History Guard
     difficulty: hard
@@ -170,6 +290,24 @@ tasks:
       silver_built: 0.15
       history_columns: 0.15
       grader_pass: 0.20
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.05
+        - id: sync_checked
+          weight: 0.20
+        - id: used_scd2
+          weight: 0.25
+        - id: silver_built
+          weight: 0.15
+        - id: history_columns
+          weight: 0.15
+        - id: grader_pass
+          weight: 0.20
   - id: orphan_quarantine
     name: Orphan Quarantine
     difficulty: medium
@@ -191,6 +329,24 @@ tasks:
       quarantine_nonempty: 0.20
       integrity_ok: 0.20
       no_explosion: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.10
+        - id: prepped_before_join
+          weight: 0.15
+        - id: left_join_used
+          weight: 0.20
+        - id: quarantine_nonempty
+          weight: 0.20
+        - id: integrity_ok
+          weight: 0.20
+        - id: no_explosion
+          weight: 0.15
   - id: drift_alignment
     name: Drift Alignment
     difficulty: medium
@@ -212,6 +368,24 @@ tasks:
       schema_materialized: 0.25
       silver_built: 0.10
       grader_pass: 0.15
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.10
+        - id: schema_evolved
+          weight: 0.25
+        - id: left_join_used
+          weight: 0.15
+        - id: schema_materialized
+          weight: 0.25
+        - id: silver_built
+          weight: 0.10
+        - id: grader_pass
+          weight: 0.15
   - id: snapshot_upsert
     name: Snapshot Upsert
     difficulty: easy
@@ -233,6 +407,24 @@ tasks:
       volume_ok: 0.20
       silver_built: 0.15
       grader_pass: 0.10
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.10
+        - id: no_explosion
+          weight: 0.20
+        - id: used_scd1
+          weight: 0.25
+        - id: volume_ok
+          weight: 0.20
+        - id: silver_built
+          weight: 0.15
+        - id: grader_pass
+          weight: 0.10
   - id: schema_history_guard
     name: Schema History Guard
     difficulty: hard
@@ -254,3 +446,21 @@ tasks:
       schema_materialized: 0.20
       history_columns: 0.15
       grader_pass: 0.20
+    grader:
+      type: weighted_rubric
+      source: tasks.score_episode
+      score_range: [0.0, 1.0]
+      pass_threshold: 0.55
+      criteria:
+        - id: committed
+          weight: 0.05
+        - id: schema_evolved
+          weight: 0.20
+        - id: used_scd2
+          weight: 0.20
+        - id: schema_materialized
+          weight: 0.20
+        - id: history_columns
+          weight: 0.15
+        - id: grader_pass
+          weight: 0.20
