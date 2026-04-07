@@ -12,7 +12,7 @@ tasks:
     description: >
       Both sources are fresh. Join keys are clean and unique. The agent must
       verify freshness, prepare keys, join, apply SCD, and commit without
-      triggering a row explosi
+      triggering a row explosion.
     success_criteria:
       - COMMIT issued (episode finalized)
       - No Cartesian explosion detected
@@ -68,3 +68,189 @@ tasks:
       used_scd2: 0.20
       schema_ok: 0.20
       grader_pass: 0.25
+  - id: schema_bootstrap
+    name: Schema Bootstrap
+    difficulty: easy
+    seed: 3
+    description: >
+      Fresh sources arrive with new columns in both Bronze tables. The agent
+      must evolve the Silver schema, execute a clean join, land a non-empty
+      Silver table, and commit without row explosion.
+    success_criteria:
+      - EVOLVE_SCHEMA issued before COMMIT
+      - No row explosion
+      - Silver contains the joined columns after drift
+      - Silver table is non-empty
+    scoring_rubric:
+      committed: 0.15
+      no_explosion: 0.20
+      schema_evolved: 0.25
+      schema_materialized: 0.20
+      silver_built: 0.20
+  - id: dedup_guardrail
+    name: Dedup Guardrail
+    difficulty: medium
+    seed: 4
+    description: >
+      Dirty join keys and duplicate Dimension rows increase the risk of row
+      explosion. The agent must prep keys, deduplicate Source B, produce a
+      non-empty Silver table, and commit cleanly.
+    success_criteria:
+      - PREP_KEYS_A and PREP_KEYS_B issued before join
+      - DEDUPLICATE_B issued before join
+      - No row explosion
+      - Silver table is non-empty
+      - Grader passes
+    scoring_rubric:
+      committed: 0.10
+      prepped_before_join: 0.15
+      deduped_before_join: 0.25
+      no_explosion: 0.25
+      silver_built: 0.10
+      grader_pass: 0.15
+  - id: stale_sync_recovery
+    name: Stale Sync Recovery
+    difficulty: hard
+    seed: 5
+    description: >
+      Source A is stale and the pipeline must not proceed blindly. The agent
+      must verify freshness, recover a high-match join, build Silver, and
+      still pass the final audit.
+    success_criteria:
+      - SYNC_CHECK issued before any join
+      - No row explosion
+      - match_rate > 0.80 after join
+      - Silver table is non-empty
+      - Grader passes
+    scoring_rubric:
+      committed: 0.05
+      sync_checked: 0.30
+      no_explosion: 0.20
+      high_match: 0.15
+      silver_built: 0.15
+      grader_pass: 0.15
+  - id: fresh_join_baseline
+    name: Fresh Join Baseline
+    difficulty: easy
+    seed: 6
+    description: >
+      A clean baseline task that rewards a simple, efficient Bronze-to-Silver
+      run. The agent should avoid unnecessary actions while producing a
+      high-match, non-exploding join and a usable Silver table.
+    success_criteria:
+      - COMMIT issued
+      - No row explosion
+      - match_rate > 0.80 after join
+      - Silver table is non-empty
+      - Episode completed efficiently
+    scoring_rubric:
+      committed: 0.15
+      no_explosion: 0.25
+      high_match: 0.25
+      silver_built: 0.20
+      efficient_run: 0.15
+  - id: stale_history_guard
+    name: Stale History Guard
+    difficulty: hard
+    seed: 7
+    description: >
+      A stale-source episode where the agent must both verify freshness and
+      preserve historical correctness. The task emphasizes SCD-2 usage and
+      proper history columns in Silver.
+    success_criteria:
+      - SYNC_CHECK issued before any join
+      - SCD-2 used instead of SCD-1
+      - Silver table is non-empty
+      - Silver contains history columns
+      - Grader passes
+    scoring_rubric:
+      committed: 0.05
+      sync_checked: 0.20
+      used_scd2: 0.25
+      silver_built: 0.15
+      history_columns: 0.15
+      grader_pass: 0.20
+  - id: orphan_quarantine
+    name: Orphan Quarantine
+    difficulty: medium
+    seed: 8
+    description: >
+      Dirty keys create unmatched Fact rows that should not be silently
+      dropped. The agent must prep keys, choose a left join, preserve a
+      meaningful quarantine set, and keep audit integrity intact.
+    success_criteria:
+      - PREP_KEYS_A and PREP_KEYS_B issued before join
+      - Left join used
+      - Quarantine contains rows
+      - No row explosion
+      - Integrity checks pass
+    scoring_rubric:
+      committed: 0.10
+      prepped_before_join: 0.15
+      left_join_used: 0.20
+      quarantine_nonempty: 0.20
+      integrity_ok: 0.20
+      no_explosion: 0.15
+  - id: drift_alignment
+    name: Drift Alignment
+    difficulty: medium
+    seed: 9
+    description: >
+      Schema drift introduces new columns, but the pipeline is otherwise
+      clean. The agent must evolve the schema, use the audited left-join
+      path, materialize the new shape in Silver, and commit successfully.
+    success_criteria:
+      - EVOLVE_SCHEMA issued before COMMIT
+      - Left join used
+      - Silver contains the joined columns after drift
+      - Silver table is non-empty
+      - Grader passes
+    scoring_rubric:
+      committed: 0.10
+      schema_evolved: 0.25
+      left_join_used: 0.15
+      schema_materialized: 0.25
+      silver_built: 0.10
+      grader_pass: 0.15
+  - id: snapshot_upsert
+    name: Snapshot Upsert
+    difficulty: easy
+    seed: 10
+    description: >
+      A clean snapshot-style load where SCD-1 is sufficient. The agent should
+      choose overwrite semantics, maintain safe volume, and land a non-empty
+      Silver table without introducing join problems.
+    success_criteria:
+      - SCD-1 used instead of SCD-2
+      - No row explosion
+      - Silver row count <= Source A row count
+      - Silver table is non-empty
+      - Grader passes
+    scoring_rubric:
+      committed: 0.10
+      no_explosion: 0.20
+      used_scd1: 0.25
+      volume_ok: 0.20
+      silver_built: 0.15
+      grader_pass: 0.10
+  - id: schema_history_guard
+    name: Schema History Guard
+    difficulty: hard
+    seed: 11
+    description: >
+      Schema drift and historical tracking requirements arrive together. The
+      agent must evolve schema, materialize the merged columns in Silver, use
+      SCD-2, and preserve history metadata through commit.
+    success_criteria:
+      - EVOLVE_SCHEMA issued before COMMIT
+      - SCD-2 used instead of SCD-1
+      - Silver contains the joined columns after drift
+      - Silver contains history columns
+      - Grader passes
+    scoring_rubric:
+      committed: 0.05
+      schema_evolved: 0.20
+      used_scd2: 0.20
+      schema_materialized: 0.20
+      history_columns: 0.15
+      grader_pass: 0.20
