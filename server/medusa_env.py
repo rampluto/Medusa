@@ -35,6 +35,7 @@ try:
     )
     from .rewards import RewardEngine
     from .scenarios import Scenario, ScenarioGenerator
+    from .tasks import TASKS, score_episode
 except ImportError:
     from grader import Grader
     from models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
@@ -48,6 +49,7 @@ except ImportError:
     )
     from rewards import RewardEngine
     from scenarios import Scenario, ScenarioGenerator
+    from tasks import TASKS, score_episode
 
 
 # ---------------------------------------------------------------------------
@@ -501,13 +503,21 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             "timestamp": time.time(),
         })
 
+        # Map the current episode seed to the task definitions to get the explicit task_id
+        task_id = next((tid for tid, t in TASKS.items() if t.seed == self._state.seed), "clean_pipeline")
+        
+        # Calculate the final [0, 1] evaluation score for this episode
+        final_result = score_episode(task_id, self._state, self._tables)
+        final_score = final_result.score
+
         features = _build_features(self._state)
         obs = MedusaObservation(
             message=(
                 f"COMMIT: episode finalized. "
                 f"{'Grader: PASS ✓' if grader_result.passed else 'Grader: FAIL ✗'} "
                 f"Bonus: {grader_result.bonus_reward:+.1f} | "
-                f"Total reward: {self._state.cumulative_reward:.1f}"
+                f"Total reward: {self._state.cumulative_reward:.1f} | "
+                f"Final Score: {final_score:.3f}"
             ),
             features=features,
             metrics={
@@ -516,11 +526,13 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
                 "silver_rows": self._state.silver_row_count,
                 "quarantine_rows": self._state.quarantine_row_count,
                 "governance_log_entries": len(self._tables.governance_log),
+                "score": final_score,
             },
             metadata={
                 "run_id": self._state.run_id,
                 "steps": self._state.step_idx,
                 "cumulative_reward": self._state.cumulative_reward,
+                "score": final_score,
             },
             reward=reward,
             done=True,
