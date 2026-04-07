@@ -4,3 +4,67 @@ type: space
 runtime: fastapi
 app: server.app:app
 port: 8000
+tasks:
+  - id: clean_pipeline
+    name: Clean Pipeline
+    difficulty: easy
+    seed: 0
+    description: >
+      Both sources are fresh. Join keys are clean and unique. The agent must
+      verify freshness, prepare keys, join, apply SCD, and commit without
+      triggering a row explosi
+    success_criteria:
+      - COMMIT issued (episode finalized)
+      - No Cartesian explosion detected
+      - Silver row count <= Source A row count
+      - match_rate > 0.80 after join
+    scoring_rubric:
+      committed: 0.20
+      no_explosion: 0.25
+      volume_ok: 0.20
+      high_match: 0.20
+      grader_pass: 0.15
+  - id: dirty_integration
+    name: Dirty Key Integration
+    difficulty: medium
+    seed: 1
+    description: >
+      Source A has NULLs and whitespace in join keys. Source B has duplicate
+      keys that can cause row explosion. The agent must PREP_KEYS and
+      DEDUPLICATE before joining, and correctly quarantine unresolvable
+      orphans.
+    success_criteria:
+      - PREP_KEYS_A issued before EXECUTE_JOIN
+      - PREP_KEYS_B issued before EXECUTE_JOIN
+      - DEDUPLICATE_B issued before EXECUTE_JOIN
+      - No row explosion
+      - Quarantine integrity check passes
+    scoring_rubric:
+      committed: 0.10
+      prepped_before_join: 0.20
+      deduped_before_join: 0.20
+      no_explosion: 0.25
+      integrity_ok: 0.15
+      grader_pass: 0.10
+  - id: full_medallion
+    name: Full Medallion Integration
+    difficulty: hard
+    seed: 2
+    description: >
+      Source A is stale (>6h old). Source B has new schema columns not
+      registered in Silver. The agent must check freshness, evolve the schema,
+      clean keys, deduplicate, execute a left join, apply SCD-2 for tracked
+      columns, and pass all grader checks.
+    success_criteria:
+      - SYNC_CHECK issued before any join
+      - EVOLVE_SCHEMA issued before COMMIT
+      - SCD-2 applied (not SCD-1) for tracked column
+      - Silver schema contains new columns from drift
+      - All 4 grader checks pass
+    scoring_rubric:
+      committed: 0.05
+      sync_checked: 0.15
+      schema_evolved: 0.15
+      used_scd2: 0.20
+      schema_ok: 0.20
+      grader_pass: 0.25
