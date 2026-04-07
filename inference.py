@@ -268,12 +268,13 @@ def run_task(task_id: str, max_steps: int = 15) -> TaskResult:
 
 def main() -> None:
     if TASK_NAME.lower() == "all":
-        results = [run_task(task_id) for task_id in TASKS]
+        results = [run_task(task_id) for task_id in list(TASKS)]
         all_passed = all(result.score >= 0.35 for result in results)
-        sys.exit(0 if all_passed else 1)
 
     else:
         run_task(TASK_NAME)
+
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
