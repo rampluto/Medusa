@@ -32,8 +32,10 @@ from typing import List, Optional
 # ---------------------------------------------------------------------------
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY") or "mock-key"
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+TASK_NAME = os.getenv("TASK_NAME", "clean_pipeline")
+BENCHMARK = os.getenv("BENCHMARK", "medusa_env")
 
 _missing = [k for k, v in {
     "API_BASE_URL": API_BASE_URL,
@@ -175,53 +177,80 @@ def choose_action(
 
 
 # ---------------------------------------------------------------------------
+# Logging Functions (Hackathon STDOut Format)
+# ---------------------------------------------------------------------------
+
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
+
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # Run one task
 # ---------------------------------------------------------------------------
 
-def run_task(task_id: str, max_steps: int = 15) -> TaskResult:
-    """Run the LLM agent for one MEDUSA task. Returns the TaskResult."""
+def run_task(task_id: str, max_steps: int = 15) -> None:
+    """Run the LLM agent for one MEDUSA task using required hackathon STDOUT format."""
+    log_start(task=task_id, env=BENCHMARK, model=MODEL_NAME)
+    
     task = TASKS[task_id]
-    print(f"\n{'='*60}")
-    print(f"TASK: {task.name} [{task.difficulty.upper()}]  (seed={task.seed})")
-    print(f"  {task.description}")
-    print(f"{'='*60}")
-
     env = MedusaEnv(n_fact_rows=200, n_dim_rows=150, max_steps=max_steps)
     obs = env.reset(seed=task.seed)
 
     history: List[dict] = []
+    rewards_list: List[float] = []
     step = 0
-    t0 = time.time()
+    success = False
+    score = 0.0
 
-    while not obs.done and step < max_steps:
-        step += 1
-        action_str = choose_action(obs.features, history, step)
-        action_type = MedusaActionType(action_str)
-        action = MedusaAction(action=action_type)
+    try:
+        while not obs.done and step < max_steps:
+            step += 1
+            action_str = choose_action(obs.features, history, step)
+            
+            # Since the environment throws errors on bad actions, we just pass the action string.
+            try:
+                action_type = MedusaActionType(action_str)
+            except ValueError:
+                action_type = MedusaActionType.COMMIT # default fallback
+                
+            action = MedusaAction(action=action_type)
 
-        obs = env.step(action)
-        reward = obs.reward or 0.0
+            obs = env.step(action)
+            reward = obs.reward or 0.0
+            rewards_list.append(reward)
 
-        print(f"  Step {step:2d}: {action_str:25s}  reward={reward:+7.2f}  "
-              f"cumulative={env.state.cumulative_reward:+8.2f}")
+            log_step(step=step, action=action_str, reward=reward, done=obs.done, error=None)
 
-        history.append({
-            "user": (f"Step {step}. Features: [{', '.join(f'{v:.3f}' for v in obs.features)}]"
-                     " What action?"),
-            "assistant": action_str,
-        })
+            history.append({
+                "user": (f"Step {step}. Features: [{', '.join(f'{v:.3f}' for v in obs.features)}]"
+                         " What action?"),
+                "assistant": action_str,
+            })
 
-    elapsed = time.time() - t0
-    result = score_episode(task_id, env.state, env._tables)
+            if obs.done:
+                break
+                
+        # Tally final score via grader
+        result = score_episode(task_id, env.state, env._tables)
+        score = result.score
+        success = result.passed
 
-    print(f"\n  → Score: {result.score:.4f}  Grade: {result.grade}  "
-          f"Passed: {result.passed}  ({elapsed:.1f}s)")
-    if result.notes:
-        for note in result.notes:
-            print(f"    ⚠  {note}")
-    print(f"  → Breakdown: " +
-          ", ".join(f"{k}={v:.2f}" for k, v in result.breakdown.items()))
-    return result
+    except Exception as e:
+        log_step(step=step+1 if step > 0 else 1, action="ERROR", reward=0.0, done=True, error=str(e))
+    finally:
+        log_end(success=success, steps=step, score=score, rewards=rewards_list)
 
 
 # ---------------------------------------------------------------------------
@@ -229,60 +258,8 @@ def run_task(task_id: str, max_steps: int = 15) -> TaskResult:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print("MEDUSA — Baseline Inference")
-    print(f"Model: {MODEL_NAME}")
-    print(f"API:   {API_BASE_URL}")
-    print()
-
-    task_ids = ["clean_pipeline", "dirty_integration", "full_medallion"]
-    results: dict[str, TaskResult] = {}
-    total_start = time.time()
-
-    for task_id in task_ids:
-        result = run_task(task_id)
-        results[task_id] = result
-
-    total_elapsed = time.time() - total_start
-
-    # Summary
-    print(f"\n{'='*60}")
-    print("SUMMARY")
-    print(f"{'='*60}")
-    print(f"{'Task':<25}  {'Difficulty':<8}  {'Score':>6}  {'Grade':>5}  {'Pass?':>5}")
-    print("-" * 60)
-    all_passed = True
-    for task_id, result in results.items():
-        task = TASKS[task_id]
-        print(f"{task.name:<25}  {task.difficulty:<8}  "
-              f"{result.score:>6.4f}  {result.grade:>5}  {'YES' if result.passed else 'NO':>5}")
-        if not result.passed:
-            all_passed = False
-
-    print("-" * 60)
-    avg = sum(r.score for r in results.values()) / len(results)
-    print(f"{'Average':<25}  {'':8}  {avg:>6.4f}")
-    print(f"\nTotal time: {total_elapsed:.1f}s")
-
-    # Machine-readable output for the evaluator
-    output = {
-        "model": MODEL_NAME,
-        "tasks": {
-            tid: {
-                "score": r.score,
-                "grade": r.grade,
-                "passed": r.passed,
-                "breakdown": r.breakdown,
-            }
-            for tid, r in results.items()
-        },
-        "average_score": avg,
-        "all_passed": all_passed,
-    }
-    print("\n--- JSON RESULTS ---")
-    print(json.dumps(output, indent=2))
-
-    sys.exit(0 if all_passed else 1)
-
+    # Do not loop task variants anymore; run dynamically via TASK_NAME
+    run_task(TASK_NAME)
 
 if __name__ == "__main__":
     main()
