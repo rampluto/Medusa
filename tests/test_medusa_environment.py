@@ -586,6 +586,27 @@ class TestMedusaTasks:
         r2 = score_episode("full_medallion", state_scd2)
         assert r2.score > r1.score
 
+    def test_full_medallion_schema_ok_uses_grader_report(self):
+        state = MedusaState(
+            stage="committed",
+            did_sync_check=True,
+            did_evolve_schema=True,
+            scd_type="SCD-2",
+            grader_passed=True,
+            grader_report=(
+                "=== MEDUSA Grader Audit ===\n"
+                "  Volume OK:    ✓\n"
+                "  Integrity OK: ✓\n"
+                "  Schema OK:    ✓\n"
+                "  History OK:   ✓\n"
+                "  Bonus Reward: +15.0\n"
+                "  PASS ✓"
+            ),
+        )
+
+        result = score_episode("full_medallion", state)
+        assert result.breakdown["schema_ok"] == TASKS["full_medallion"].scoring_rubric["schema_ok"]
+
     def test_unknown_task_raises(self):
         with pytest.raises(ValueError, match="Unknown task_id"):
             score_episode("nonexistent_task", MedusaState(stage="committed"))
