@@ -1,3 +1,4 @@
+import argparse
 import random
 
 # Support both installed package usage (medusa_env) and in-repo local modules
@@ -58,7 +59,11 @@ class CleanPipelinePolicy:
         return MedusaActionType.COMMIT
 
 
-print("Policies defined: Random, Always Commit, Clean Pipeline Heuristic")
+POLICY_REGISTRY = {
+    "random": RandomPolicy,
+    "always_commit": AlwaysCommitPolicy,
+    "clean_pipeline": CleanPipelinePolicy,
+}
 
 
 def run_episode(env, policy, seed=0, verbose=False):
@@ -82,7 +87,59 @@ def run_episode(env, policy, seed=0, verbose=False):
     return result.reward
 
 
-# Demo: one verbose episode with CleanPipelinePolicy
-with medusa_env(base_url=MEDUSA_URL).sync() as env:
-    print('\nTesting Clean Pipeline Policy — single episode (seed=0):')
-    run_episode(env, CleanPipelinePolicy(), seed=0, verbose=True)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one MEDUSA episode with a selectable policy."
+    )
+    parser.add_argument(
+        "--policy",
+        choices=sorted(POLICY_REGISTRY),
+        default="clean_pipeline",
+        help="Policy to run for the episode.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Scenario seed to use when resetting the environment.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=MEDUSA_URL,
+        help="MEDUSA environment server base URL.",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print per-step actions and terminal details.",
+    )
+    parser.add_argument(
+        "--list-policies",
+        action="store_true",
+        help="Print the available policy names and exit.",
+    )
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.list_policies:
+        print("Available policies:")
+        for policy_name, policy_cls in sorted(POLICY_REGISTRY.items()):
+            print(f"  {policy_name}: {policy_cls.name}")
+        return 0
+
+    policy = POLICY_REGISTRY[args.policy]()
+
+    with medusa_env(base_url=args.base_url).sync() as env:
+        print(f"\nRunning policy '{args.policy}' ({policy.name}) with seed={args.seed}:")
+        reward = run_episode(env, policy, seed=args.seed, verbose=args.verbose)
+        print(f"Final reward: {reward}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

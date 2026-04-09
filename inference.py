@@ -306,7 +306,7 @@ def run_task(task_id: str, max_steps: int = 15) -> TaskResult:
 
 def main() -> None:
     if TASK_NAME.lower() == "all":
-        results = [run_task(task_id) for task_id in list(TASKS)[:5]]
+        results = [run_task(task_id) for task_id in list(TASKS)]
         all_passed = all(result.score >= 0.35 for result in results)
 
     else:

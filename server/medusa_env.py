@@ -124,7 +124,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
     def __init__(
         self,
         scenario_seed: Optional[int] = None,
-        max_steps: int = 20,
+        max_steps: int = 50,
         stale_threshold_hours: float = 6.0,
         n_fact_rows: int = 200,
         n_dim_rows: int = 150,
