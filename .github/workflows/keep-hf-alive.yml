@@ -2,9 +2,9 @@ name: Keep HF Space Alive
 
 on:
   schedule:
-    - cron: "* * * * *"
+    - cron: '45/1 * * * *'
       timezone: "Asia/Kolkata"
-  # workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   ping:
