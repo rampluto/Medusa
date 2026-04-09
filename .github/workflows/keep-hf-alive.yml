@@ -2,7 +2,8 @@ name: Keep HF Space Alive
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "* * * * *"
+      timezone: "Asia/Kolkata"
   workflow_dispatch:
 
 jobs:
@@ -11,6 +12,32 @@ jobs:
     timeout-minutes: 5
     env:
       HF_SPACE_URL: https://rampluto-medusa-env.hf.space
+      TZ: Asia/Kolkata
     steps:
-      - name: Ping Hugging Face Space
-        run: curl -fsS --retry 3 --retry-delay 5 --max-time 30 "$HF_SPACE_URL" > /dev/null
+      - name: Call Hugging Face Space Reset
+        run: |
+          set -euo pipefail
+          reset_url="$HF_SPACE_URL/reset"
+          response_file="$(mktemp)"
+
+          echo "[$(date +"%Y-%m-%d %H:%M:%S %Z")] Calling reset endpoint: $reset_url"
+          http_status="$(curl -sS -o "$response_file" -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            --retry 3 \
+            --retry-delay 5 \
+            --max-time 30 \
+            "$reset_url")"
+
+          echo "HTTP status: $http_status"
+          echo "Response body:"
+          cat "$response_file"
+          echo
+
+          if [ "$http_status" = "200" ]; then
+            echo "Run status: success"
+          else
+            echo "Run status: failure"
+            exit 1
+          fi
