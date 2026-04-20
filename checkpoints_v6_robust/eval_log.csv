@@ -1,0 +1,4 @@
+iteration,mean_score,easy_mean,medium_mean,hard_mean,score_clean_pipeline,score_dirty_integration,score_full_medallion,score_holdout_12,score_holdout_13,score_holdout_14,score_holdout_15,score_holdout_16,score_holdout_17,score_holdout_mean
+50,0.2833,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.2833
+100,0.2833,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.2833
+150,0.2833,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.45,0.35,0.05,0.2833
