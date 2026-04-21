@@ -1,22 +1,23 @@
-"""MEDUSA scenario generator.
+"""MEDUSA scenario generator — v4.0.
 
-Produces randomised Bronze A (Fact) and Bronze B (Dimension) DataFrames to
-drive each training episode. Four canonical scenarios cover the canonical
-failure modes described in the MEDUSA blueprint.
+Produces:
+  1. Legacy single-episode scenarios (4 canonical variants) — backward compat
+  2. DayDataGenerator for the 30-day gauntlet: per-day Bronze batches with
+     deterministic corruptions and trap-day injections.
 """
 
 from __future__ import annotations
 
 import random
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 
 # ---------------------------------------------------------------------------
-# Scenario dataclass
+# Scenario dataclass (legacy — single-episode mode)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -42,6 +43,33 @@ class Scenario:
 # ---------------------------------------------------------------------------
 
 _STALE_THRESHOLD_HOURS = 6.0
+
+# Column pool for the daily data generator
+_COLUMNS = {
+    "user_id": "str",
+    "customer_name": "str",
+    "product_name": "str",
+    "category": "str",
+    "revenue": "float",
+    "discount_amount": "float",
+    "quantity": "int",
+    "price": "float",
+    "order_date": "str",
+    "region": "str",
+}
+
+# Corruption pool for gap days
+_CORRUPTION_POOL: List[Tuple[str, str]] = [
+    ("discount_amount", "fill_zero"),
+    ("quantity", "fill_zero"),
+    ("price", "fill_zero"),
+    ("customer_name", "strip"),
+    ("product_name", "strip"),
+    ("category", "strip"),
+    ("quantity", "cast"),
+    ("price", "cast"),
+    ("revenue", "cast"),
+]
 
 
 def _make_fact(
@@ -113,7 +141,7 @@ def _make_dim(
 
 
 # ---------------------------------------------------------------------------
-# Scenario Generator
+# Legacy Scenario Generator (single-episode mode, backward compat)
 # ---------------------------------------------------------------------------
 
 class ScenarioGenerator:
@@ -216,4 +244,201 @@ class ScenarioGenerator:
                 new_cols_a=extra_a, new_cols_b=extra_b,
                 description="Schema drift: new columns in A and B.",
             )
-        
+
+
+# ---------------------------------------------------------------------------
+# v4.0: 30-Day Data Generator
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DayBatch:
+    """One day's worth of Bronze data for the 30-day gauntlet."""
+
+    day: int
+    raw_data: pd.DataFrame          # The daily Bronze batch
+    anomalies: List[Tuple[str, str]]  # List of (col, op) corruptions injected
+    is_trap_day: bool
+    trap_type: Optional[str] = None  # "type_trap" | "oom_trap" | "schema_drift" | "null_nuke"
+    new_columns: List[str] = field(default_factory=list)  # Columns added by schema drift
+    description: str = ""
+
+
+class DayDataGenerator:
+    """Generates daily Bronze batches for the 30-day gauntlet.
+
+    Each day produces a fresh batch of raw data with deterministic
+    corruptions injected. The anomaly checklist is the source of truth
+    for both the grader and the reward gate.
+    """
+
+    # Major trap days with fixed, unique traps
+    TRAP_DAYS: Dict[int, str] = {
+        8: "type_trap",
+        14: "oom_trap",
+        21: "schema_drift",
+        28: "null_nuke",
+    }
+
+    # Base columns present in every daily batch
+    BASE_COLUMNS = ["user_id", "customer_name", "product_name",
+                    "category", "revenue", "discount_amount",
+                    "quantity", "price", "order_date", "region"]
+
+    def __init__(self, episode_seed: int, n_rows: int = 100):
+        self.episode_seed = episode_seed
+        self.n_rows = n_rows
+        self._day_anomalies: Dict[int, List[Tuple[str, str]]] = {}
+        self._build_anomaly_schedule()
+
+    def _build_anomaly_schedule(self) -> None:
+        """Pre-compute the anomaly checklist for all 30 days."""
+        rng = random.Random(self.episode_seed)
+
+        for day in range(1, 31):
+            if day in self.TRAP_DAYS:
+                trap = self.TRAP_DAYS[day]
+                if trap == "type_trap":
+                    self._day_anomalies[day] = [("revenue", "strip"), ("revenue", "cast")]
+                elif trap == "oom_trap":
+                    self._day_anomalies[day] = [("user_id", "deduplicate")]
+                elif trap == "schema_drift":
+                    self._day_anomalies[day] = [("promo_code", "evolve")]
+                elif trap == "null_nuke":
+                    self._day_anomalies[day] = [("user_id", "quarantine")]
+            else:
+                # Gap day: pick 1-2 corruptions from the pool
+                n_corruptions = rng.choice([1, 2])
+                day_rng = random.Random(self.episode_seed * 1000 + day)
+                pool = list(_CORRUPTION_POOL)
+                day_rng.shuffle(pool)
+                self._day_anomalies[day] = pool[:n_corruptions]
+
+    @property
+    def day_anomalies(self) -> Dict[int, List[Tuple[str, str]]]:
+        return dict(self._day_anomalies)
+
+    def generate_day(self, day: int) -> DayBatch:
+        """Generate the Bronze batch for a specific day."""
+        rng = random.Random(self.episode_seed * 1000 + day)
+        n = self.n_rows
+
+        # --- Build base data ---
+        data: Dict[str, Any] = {
+            "user_id": [f"U{rng.randint(1000, 9999)}" for _ in range(n)],
+            "customer_name": [rng.choice(["Alice", "Bob", "Charlie", "Diana", "Eve",
+                                          "Frank", "Grace", "Hank"]) for _ in range(n)],
+            "product_name": [rng.choice(["Widget", "Gadget", "Doohickey", "Thingamajig",
+                                         "Gizmo"]) for _ in range(n)],
+            "category": [rng.choice(["Electronics", "Home", "Garden", "Sports",
+                                     "Books"]) for _ in range(n)],
+            "revenue": [round(rng.uniform(5.0, 500.0), 2) for _ in range(n)],
+            "discount_amount": [round(rng.uniform(0.0, 50.0), 2) for _ in range(n)],
+            "quantity": [rng.randint(1, 20) for _ in range(n)],
+            "price": [round(rng.uniform(1.0, 200.0), 2) for _ in range(n)],
+            "order_date": [f"2024-{rng.randint(1,12):02d}-{rng.randint(1,28):02d}"
+                           for _ in range(n)],
+            "region": [rng.choice(["North", "South", "East", "West"]) for _ in range(n)],
+        }
+
+        anomalies = self._day_anomalies.get(day, [])
+        is_trap = day in self.TRAP_DAYS
+        trap_type = self.TRAP_DAYS.get(day)
+        new_columns: List[str] = []
+        description = f"Day {day}"
+
+        # --- Inject corruptions ---
+        if is_trap:
+            if trap_type == "type_trap":
+                # Day 8: revenue as "$50.50" strings
+                data["revenue"] = [f"${v}" for v in data["revenue"]]
+                description = "Day 8 — Type Trap: revenue stored as '$50.50' strings"
+
+            elif trap_type == "oom_trap":
+                # Day 14: massive duplicate user_ids
+                oom_key = rng.choice(data["user_id"][:5])
+                data["user_id"] = [oom_key] * n  # All same key
+                description = "Day 14 — OOM Trap: all rows have identical user_id"
+
+            elif trap_type == "schema_drift":
+                # Day 21: promo_code column appears
+                data["promo_code"] = [f"PROMO{rng.randint(100, 999)}" if rng.random() > 0.3
+                                      else None for _ in range(n)]
+                new_columns = ["promo_code"]
+                description = "Day 21 — Schema Drift: promo_code column appears"
+
+            elif trap_type == "null_nuke":
+                # Day 28: 20% of user_id are NULL
+                null_count = int(n * 0.20)
+                null_indices = rng.sample(range(n), null_count)
+                for idx in null_indices:
+                    data["user_id"][idx] = None
+                description = "Day 28 — Null Nuke: 20% of user_id are NULL"
+        else:
+            # Apply gap-day corruptions
+            for col, op in anomalies:
+                if col not in data:
+                    continue
+                if op == "fill_zero":
+                    # Inject 5-15% nulls
+                    null_pct = rng.uniform(0.05, 0.15)
+                    null_count = int(n * null_pct)
+                    null_indices = rng.sample(range(n), null_count)
+                    for idx in null_indices:
+                        data[col][idx] = None
+                elif op == "strip":
+                    # Add trailing whitespace to 10-30% of rows
+                    ws_pct = rng.uniform(0.10, 0.30)
+                    ws_count = int(n * ws_pct)
+                    ws_indices = rng.sample(range(n), ws_count)
+                    for idx in ws_indices:
+                        if data[col][idx] is not None:
+                            data[col][idx] = f"  {data[col][idx]}  "
+                elif op == "cast":
+                    # Convert numeric to string for 100% of rows
+                    data[col] = [str(v) if v is not None else None for v in data[col]]
+
+        df = pd.DataFrame(data)
+
+        return DayBatch(
+            day=day,
+            raw_data=df,
+            anomalies=anomalies,
+            is_trap_day=is_trap,
+            trap_type=trap_type,
+            new_columns=new_columns,
+            description=description,
+        )
+
+    def verify_batch_has_anomaly(self, batch: DayBatch) -> bool:
+        """Verify that the raw data in a batch fails at least one assertion.
+
+        Returns True if the batch has detectable corruption.
+        """
+        df = batch.raw_data
+
+        # Check for nulls in any column
+        if df.isnull().any().any():
+            return True
+
+        # Check for whitespace in string columns
+        for col in df.select_dtypes(include=["object"]).columns:
+            if df[col].dropna().astype(str).str.contains(r"^\s|\s$").any():
+                return True
+
+        # Check for type mismatches (e.g., revenue as string with $)
+        if "revenue" in df.columns:
+            try:
+                pd.to_numeric(df["revenue"], errors="raise")
+            except (ValueError, TypeError):
+                return True
+
+        # Check for schema drift (new columns)
+        if batch.new_columns:
+            return True
+
+        # Check for duplicate keys
+        if "user_id" in df.columns:
+            if df["user_id"].duplicated().sum() > len(df) * 0.5:
+                return True
+
+        return False

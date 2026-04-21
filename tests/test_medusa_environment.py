@@ -1,4 +1,4 @@
-"""Tests for the MEDUSA environment.
+"""Tests for the MEDUSA environment — v4.0.
 
 Covers: models, scenario generator, operators, reward engine, grader,
 and full end-to-end environment episodes.
@@ -33,6 +33,9 @@ class TestMedusaModels:
         assert s.did_sync_check is False
         assert s.explosion_detected is False
         assert s.grader_passed is False
+        assert s.day28_quarantine_rows == 0
+        assert s.last_action_result == ""
+        assert s.last_block_reason == ""
 
     def test_observation_defaults(self):
         obs = MedusaObservation()
@@ -93,7 +96,7 @@ class TestMedusaScenarios:
 
 
 # ---------------------------------------------------------------------------
-# Operators
+# Operators (legacy, backward compat)
 # ---------------------------------------------------------------------------
 
 from medusa_env.operators import (
@@ -184,10 +187,78 @@ class TestMedusaOperators:
 
 
 # ---------------------------------------------------------------------------
-# Reward Engine
+# v4.0 Operators
 # ---------------------------------------------------------------------------
 
-from medusa_env.rewards import RewardEngine
+from medusa_env.operators import (
+    profile_table,
+    clean_column,
+    deduplicate_rows,
+    quarantine_rows as op_quarantine_rows,
+    merge_into_silver,
+)
+
+
+class TestV4Operators:
+    def test_profile_table(self):
+        df = pd.DataFrame({"id": [1, 2, None], "val": [10, 20, 30]})
+        profile = profile_table(df)
+        assert "id" in profile
+        assert "val" in profile
+        assert profile["id"]["null_pct"] == pytest.approx(33.3, abs=0.5)
+
+    def test_clean_column_strip(self):
+        df = pd.DataFrame({"name": ["  Alice  ", "Bob", None]})
+        result, rows = clean_column(df, "name", "strip")
+        assert result["name"].iloc[0] == "Alice"
+        assert rows >= 1
+
+    def test_clean_column_cast(self):
+        df = pd.DataFrame({"revenue": ["$50.50", "100", None]})
+        result, rows = clean_column(df, "revenue", "cast")
+        assert result["revenue"].dtype == float
+        assert result["revenue"].iloc[0] == pytest.approx(50.50)
+
+    def test_clean_column_fill_zero(self):
+        df = pd.DataFrame({"val": [1, None, 3]})
+        result, rows = clean_column(df, "val", "fill_zero")
+        assert rows == 1
+        assert result["val"].isnull().sum() == 0
+
+    def test_deduplicate_rows(self):
+        df = pd.DataFrame({"user_id": ["A", "A", "B"], "val": [1, 2, 3]})
+        result, dupes = deduplicate_rows(df, "user_id")
+        assert dupes == 1
+        assert len(result) == 2
+
+    def test_quarantine_rows_null(self):
+        df = pd.DataFrame({"user_id": ["A", None, "B", None]})
+        kept, quarantined = op_quarantine_rows(df, "user_id IS NULL")
+        assert len(quarantined) == 2
+        assert len(kept) == 2
+
+    def test_merge_into_silver_upsert(self):
+        import numpy as np
+        silver = pd.DataFrame({"user_id": ["A", "B"], "val": [1, 2]})
+        daily = pd.DataFrame({"user_id": ["B", "C"], "val": [99, 3]})
+        result = merge_into_silver(silver, daily, "user_id")
+        # B should be updated, C should be appended, A unchanged
+        assert len(result) == 3
+        b_row = result[result["user_id"] == "B"]
+        assert b_row["val"].iloc[0] == 99
+
+    def test_merge_into_silver_empty(self):
+        silver = pd.DataFrame()
+        daily = pd.DataFrame({"user_id": ["A"], "val": [1]})
+        result = merge_into_silver(silver, daily)
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Reward Engine (v4.0)
+# ---------------------------------------------------------------------------
+
+from medusa_env.rewards import RewardEngine, REWARD_TABLE
 
 
 class TestMedusaRewards:
@@ -195,75 +266,80 @@ class TestMedusaRewards:
     def engine(self):
         return RewardEngine()
 
-    def _clean_state(self):
-        s = MedusaState()
-        s.did_prep_a = True
-        s.did_prep_b = True
-        s.did_sync_check = True
-        return s
+    def test_step_cost_always_applied(self, engine):
+        r = engine.compute("PROFILE_TABLE", profile_call_count=1)
+        assert r == pytest.approx(-0.1, abs=0.01)
 
-    def test_step_penalty_always_applied(self, engine):
-        r = engine.evaluate("SYNC_CHECK", {}, MedusaState())
-        assert r == pytest.approx(-0.2, abs=0.01)
+    def test_profile_2nd_call_penalty(self, engine):
+        r = engine.compute("PROFILE_TABLE", profile_call_count=2)
+        assert r == pytest.approx(-1.0, abs=0.01)
 
-    def test_high_match_join_reward(self, engine):
-        r = engine.evaluate(
-            "EXECUTE_JOIN_LEFT",
-            {"match_rate": 0.95, "join_rows": 100, "fact_rows": 100,
-             "explosion_detected": False, "quarantine_rows": 5},
-            self._clean_state(),
+    def test_clean_checklist_hit(self, engine):
+        r = engine.compute(
+            "CLEAN_COLUMN",
+            col_op=("revenue", "strip"),
+            today_anomalies=[("revenue", "strip"), ("revenue", "cast")],
         )
-        assert r > 0.0  # +25 - 0.2 + 10 (quarantine) = +34.8
+        assert r == pytest.approx(-0.1 + 1.0, abs=0.01)
 
-    def test_row_explosion_heavy_penalty(self, engine):
-        r = engine.evaluate(
-            "EXECUTE_JOIN_INNER",
-            {"explosion_detected": True, "join_rows": 1000, "fact_rows": 100,
-             "match_rate": 1.0, "quarantine_rows": 0},
-            self._clean_state(),
+    def test_clean_no_hit(self, engine):
+        r = engine.compute(
+            "CLEAN_COLUMN",
+            col_op=("revenue", "strip"),
+            today_anomalies=[("name", "strip")],
         )
-        assert r < -50.0
+        assert r == pytest.approx(-0.1, abs=0.01)
 
-    def test_dirty_join_penalty(self, engine):
-        # No PREP_KEYS → dirty join penalty
-        state = MedusaState()
-        state.did_prep_a = False
-        state.did_prep_b = False
-        r = engine.evaluate(
-            "EXECUTE_JOIN_LEFT",
-            {"explosion_detected": False, "join_rows": 0, "fact_rows": 50,
-             "match_rate": 0.0, "quarantine_rows": 0},
-            state,
+    def test_deduplicate_effective(self, engine):
+        r = engine.compute("DEDUPLICATE", dupes_removed=5)
+        assert r == pytest.approx(-0.1 + 1.0, abs=0.01)
+
+    def test_deduplicate_no_effect(self, engine):
+        r = engine.compute("DEDUPLICATE", dupes_removed=0)
+        assert r == pytest.approx(-0.1, abs=0.01)
+
+    def test_evolve_schema_valid(self, engine):
+        r = engine.compute("EVOLVE_SILVER_SCHEMA", column_exists_in_raw=True)
+        assert r == pytest.approx(-0.1 + 1.0, abs=0.01)
+
+    def test_evolve_schema_invalid(self, engine):
+        r = engine.compute("EVOLVE_SILVER_SCHEMA", column_exists_in_raw=False)
+        assert r == pytest.approx(-1.0, abs=0.01)
+
+    def test_quarantine_checklist(self, engine):
+        r = engine.compute(
+            "QUARANTINE_ROWS",
+            quarantine_condition="user_id IS NULL",
+            today_anomalies=[("user_id", "quarantine")],
         )
-        assert r < -20.0
+        assert r == pytest.approx(-0.1 + 0.5, abs=0.01)
 
-    def test_scd2_extra_reward(self, engine):
-        r = engine.evaluate("APPLY_SCD_2", {}, self._clean_state())
-        # +5 for SCD-2 - 0.2 step penalty
-        assert r == pytest.approx(4.8, abs=0.01)
+    def test_block_penalty(self, engine):
+        r = engine.compute("CLEAN_COLUMN", is_blocked=True)
+        assert r == pytest.approx(-2.0, abs=0.01)
 
-    def test_stale_processing_penalty(self, engine):
-        state = MedusaState()
-        state.is_stale_a = True
-        state.did_sync_check = False  # Never checked freshness
-        state.did_prep_a = True
-        state.did_prep_b = True
-        r = engine.evaluate(
-            "EXECUTE_JOIN_LEFT",
-            {"explosion_detected": False, "join_rows": 100, "fact_rows": 100,
-             "match_rate": 0.95, "quarantine_rows": 0},
-            state,
-        )
-        # Should include stale penalty on top of positive join reward
-        assert r < 25.0  # Stale penalty reduces it
+    def test_commit_reward(self):
+        assert RewardEngine.commit_reward(8) == 40.0
+
+        assert RewardEngine.crash_reward(1) == -145.0
+        assert RewardEngine.crash_reward(28) == -10.0
+
+    def test_completion_bonus(self):
+        assert RewardEngine.completion_bonus() == 200.0
+
+    def test_reward_table_values(self):
+        assert REWARD_TABLE["step_cost"] == -0.1
+        assert REWARD_TABLE["block_penalty"] == -2.0
+        assert REWARD_TABLE["execute_merge_success"] == 3.0
+        assert REWARD_TABLE["completion_bonus"] == 200.0
 
 
 # ---------------------------------------------------------------------------
-# Grader
+# Grader (v4.0)
 # ---------------------------------------------------------------------------
 
 from medusa_env.grader import Grader
-from medusa_env.scenarios import Scenario
+import numpy as np
 
 
 class TestMedusaGrader:
@@ -271,62 +347,73 @@ class TestMedusaGrader:
     def grader(self):
         return Grader()
 
-    def _make_scenario(self):
-        a = pd.DataFrame({"entity_id": ["K1", "K2", "K3"], "val": [1, 2, 3],
-                          "fact_category": ["A", "B", "C"],
-                          "fact_value": [1.0, 2.0, 3.0],
-                          "created_at": pd.date_range("2024-01-01", periods=3, freq="h")})
-        b = pd.DataFrame({"entity_id": ["K1", "K2"], "dim_name": ["N1", "N2"], "dim_status": ["x", "y"]})
-        return a, b
+    def test_freshness_pass(self, grader):
+        silver = pd.DataFrame({"user_id": ["A", "B"], "revenue": [10.0, 20.0]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.freshness_ok is True
 
-    def test_volume_check_pass(self, grader):
-        a, b = self._make_scenario()
-        silver = pd.DataFrame({"entity_id": ["K1", "K2"], "val": [1, 2]})
-        scen = ScenarioGenerator(n_fact_rows=3, n_dim_rows=2).generate(seed=0)
-        r = grader.audit(silver, pd.DataFrame(), a, b, "entity_id", "left", 1, scen)
-        assert r.volume_ok is True
+    def test_freshness_fail(self, grader):
+        silver = pd.DataFrame({"user_id": ["A"], "revenue": [10.0]})
+        r = grader.audit(silver, silver_at_day_start=1, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.freshness_ok is False
+        assert r.passed is False
 
-    def test_volume_check_fail(self, grader):
-        a, b = self._make_scenario()
-        # Silver has way more rows than source A → violation
-        silver = pd.DataFrame({"entity_id": ["K1"] * 100})
-        scen = ScenarioGenerator(n_fact_rows=3, n_dim_rows=2).generate(seed=0)
-        r = grader.audit(silver, pd.DataFrame(), a, b, "entity_id", "left", 1, scen)
-        assert r.volume_ok is False
+    def test_schema_pass(self, grader):
+        silver = pd.DataFrame({"user_id": ["A"], "revenue": [10.0], "extra": [1]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.schema_ok is True
 
-    def test_integrity_check_quarantine_true_orphans(self, grader):
-        a, b = self._make_scenario()
-        # K3 is not in B → true orphan
-        quarantine = pd.DataFrame({"entity_id": ["K3"]})
-        scen = ScenarioGenerator(n_fact_rows=3, n_dim_rows=2).generate(seed=0)
-        silver = pd.DataFrame({"entity_id": ["K1", "K2"]})
-        r = grader.audit(silver, quarantine, a, b, "entity_id", "left", 1, scen)
-        assert r.integrity_ok is True
+    def test_schema_fail(self, grader):
+        silver = pd.DataFrame({"user_id": ["A"]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.schema_ok is False
+        assert r.passed is False
 
-    def test_integrity_check_fail_dirty_quarantine(self, grader):
-        a, b = self._make_scenario()
-        # K1 IS in B but ends up in quarantine (agent failed to clean it)
-        quarantine = pd.DataFrame({"entity_id": ["K1"]})
-        scen = ScenarioGenerator(n_fact_rows=3, n_dim_rows=2).generate(seed=0)
-        silver = pd.DataFrame({"entity_id": ["K2"]})
-        r = grader.audit(silver, quarantine, a, b, "entity_id", "left", 1, scen)
-        assert r.integrity_ok is False
+    def test_type_integrity_pass(self, grader):
+        silver = pd.DataFrame({"user_id": ["A"], "revenue": np.array([10.0], dtype=np.float64)})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.type_integrity_ok is True
 
-    def test_all_pass_gives_bonus(self, grader):
-        gen = ScenarioGenerator(n_fact_rows=3, n_dim_rows=2)
-        scen = gen.generate(seed=0)
-        a, b = scen.bronze_a, scen.bronze_b
-        # Simulate a perfect run
-        silver = a.merge(b, on="entity_id", how="left")
-        r = grader.audit(silver, pd.DataFrame(), a, b, "entity_id", "left", 1, scen)
-        assert r.bonus_reward > 0
+    def test_type_integrity_fail(self, grader):
+        silver = pd.DataFrame({"user_id": ["A"], "revenue": ["$50.50"]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.type_integrity_ok is False
+        assert r.passed is False
+
+    def test_null_integrity_pass_before_day28(self, grader):
+        """Null check only fires on Day 28+."""
+        silver = pd.DataFrame({"user_id": [None, "A"], "revenue": [10.0, 20.0]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=5,
+                         contract_columns=["user_id", "revenue"])
+        # Before Day 28, null integrity is always True
+        assert r.null_integrity_ok is True
+
+    def test_null_integrity_fail_on_day28(self, grader):
+        silver = pd.DataFrame({"user_id": [None, "A"], "revenue": [10.0, 20.0]})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=28,
+                         contract_columns=["user_id", "revenue"])
+        assert r.null_integrity_ok is False
+        assert r.passed is False
+
+    def test_all_pass(self, grader):
+        silver = pd.DataFrame({"user_id": ["A", "B"], "revenue": np.array([10.0, 20.0])})
+        r = grader.audit(silver, silver_at_day_start=0, current_day=1,
+                         contract_columns=["user_id", "revenue"])
+        assert r.passed is True
+        assert "PASS ✓" in r.report
 
 
 # ---------------------------------------------------------------------------
 # Full environment integration
 # ---------------------------------------------------------------------------
 
-from medusa_env.server import MedusaEnv 
+from medusa_env.server import MedusaEnv
 from medusa_env.models import MedusaActionType
 
 
@@ -372,43 +459,6 @@ class TestMedusaEnvironment:
         assert env.state.stage == "committed"
         assert env.state.grader_passed  # Clean scenario should pass grader
 
-    def test_row_explosion_gives_heavy_penalty(self, env):
-        """Joining on non-unique B keys should trigger explosion penalty."""
-        env.reset(seed=1)  # dirty_keys scenario — B has duplicate keys
-
-        # Skip prep & dedup — go straight to join
-        env.step(MedusaAction(action=MedusaActionType.SYNC_CHECK))
-
-        # Force the dimension to have many duplicates so explosion fires
-        import pandas as _pd
-
-        env._tables.bronze_b_prepped = _pd.DataFrame({
-            "entity_id": ["K001"] * 30,
-            "dim_name": ["X"] * 30,
-            "dim_status": ["x"] * 30,
-        })
-        env._tables.bronze_a_prepped = _pd.DataFrame({
-            "entity_id": ["K001"] * 10,
-            "fact_value": list(range(10)),
-            "fact_category": ["A"] * 10,
-            "created_at": _pd.date_range("2024-01-01", periods=10, freq="h"),
-        })
-
-        obs = env.step(MedusaAction(action=MedusaActionType.EXECUTE_JOIN_INNER))
-        assert obs.reward is not None
-        assert obs.reward < -50.0
-        assert env.state.explosion_detected is True
-
-    def test_dirty_join_penalty(self, env):
-        """Skipping PREP_KEYS and joining on null-heavy keys → dirty join."""
-        env.reset(seed=1)  # dirty_keys scenario
-
-        # Skip PREP — join directly
-        obs = env.step(MedusaAction(action=MedusaActionType.EXECUTE_JOIN_LEFT))
-        # If all fact keys are null/non-matching → 0-row join → dirty join penalty
-        # (reward < base -0.2 if dirty join fired)
-        assert obs.reward is not None
-
     def test_step_idx_increments(self, env):
         env.reset(seed=0)
         for _ in range(3):
@@ -447,165 +497,92 @@ class TestMedusaEnvironment:
         assert len(log) == 2
         assert log[0]["action"] == "SYNC_CHECK"
 
+    def test_observation_contains_block_status(self, env):
+        """v4.0 observation should include BLOCK status."""
+        import json
+        env.reset(seed=42)  # v4.0 mode (seed >= 42)
+        obs = env.step(MedusaAction(
+            action=f'<action>PROFILE_TABLE</action><args>{json.dumps({"table": "bronze"})}</args>'
+        ))
+        assert "BLOCK:" in obs.message
+
+    def test_observation_contains_last_action(self, env):
+        """v4.0 observation should include last action output."""
+        import json
+        env.reset(seed=42)  # v4.0 mode
+        env.step(MedusaAction(
+            action=f'<action>PROFILE_TABLE</action><args>{json.dumps({"table": "bronze"})}</args>'
+        ))
+        obs = env.step(MedusaAction(
+            action=f'<action>EXECUTE_MERGE</action><args>{json.dumps({})}</args>'
+        ))
+        assert "Last action output:" in obs.message
+
 
 # ---------------------------------------------------------------------------
-# Task Scorer
+# Task Scorer (v4.0)
 # ---------------------------------------------------------------------------
 
 from medusa_env.tasks import TASKS, score_episode
 
 
 class TestMedusaTasks:
-    """Tests for the 3 formal task definitions and 0.0–1.0 scorer."""
+    """Tests for the v4.0 task definitions and 0.0–1.0 scorer."""
 
-    def test_three_tasks_defined(self):
-        assert "clean_pipeline" in TASKS
-        assert "dirty_integration" in TASKS
-        assert "full_medallion" in TASKS
+    def test_six_tasks_defined(self):
+        assert len(TASKS) == 6
+        assert "basic_pipeline" in TASKS
+        assert "survive_day8" in TASKS
+        assert "survive_day14" in TASKS
+        assert "survive_day21" in TASKS
+        assert "survive_day28" in TASKS
+        assert "gauntlet_30day" in TASKS
 
     def test_task_difficulties(self):
-        assert TASKS["clean_pipeline"].difficulty == "easy"
-        assert TASKS["dirty_integration"].difficulty == "medium"
-        assert TASKS["full_medallion"].difficulty == "hard"
+        assert TASKS["basic_pipeline"].difficulty == "easy"
+        assert TASKS["survive_day8"].difficulty == "medium"
+        assert TASKS["gauntlet_30day"].difficulty == "hard"
 
-    def test_task_seeds_match_scenarios(self):
-        assert TASKS["clean_pipeline"].seed == 0
-        assert TASKS["dirty_integration"].seed == 1
-        assert TASKS["full_medallion"].seed == 2
+    def test_basic_pipeline_survived_5_days(self):
+        state = MedusaState(
+            stage="committed",
+            current_day=6,
+            silver_row_count=250,
+            grader_passed=True,
+            cumulative_reward=50.0,
+        )
+        result = score_episode("basic_pipeline", state)
+        assert result.score > 0.5
+        assert result.passed
 
-    def _run_happy_path(self, seed: int) -> MedusaState:
-        """Run the optimal action sequence for the given seed and return final state."""
-        env = MedusaEnv(n_fact_rows=50, n_dim_rows=40)
-        env.reset(seed=seed)
-        for act in [
-            MedusaActionType.SYNC_CHECK,
-            MedusaActionType.EVOLVE_SCHEMA,
-            MedusaActionType.PREP_KEYS_A,
-            MedusaActionType.PREP_KEYS_B,
-            MedusaActionType.DEDUPLICATE_B,
-            MedusaActionType.EXECUTE_JOIN_LEFT,
-            MedusaActionType.APPLY_SCD_2,
-            MedusaActionType.COMMIT,
-        ]:
-            env.step(MedusaAction(action=act))
-        return env.state
-
-    # ── clean_pipeline (easy) ───────────────────────────────────────────────
-
-    def test_clean_pipeline_score_is_in_range(self):
-        state = self._run_happy_path(seed=0)
-        result = score_episode("clean_pipeline", state)
-        assert 0.0 <= result.score <= 1.0
-
-    def test_clean_pipeline_happy_path_passes(self):
-        state = self._run_happy_path(seed=0)
-        result = score_episode("clean_pipeline", state)
-        assert result.passed is True
-        assert result.grade in ("S", "A", "B")
-
-    def test_clean_pipeline_uncommitted_scores_zero(self):
+    def test_basic_pipeline_uncommitted_scores_zero(self):
         state = MedusaState(stage="running")
-        result = score_episode("clean_pipeline", state)
+        result = score_episode("basic_pipeline", state)
         assert result.score == 0.0
         assert result.grade == "F"
 
-    def test_clean_pipeline_explosion_detected_lowers_score(self):
+    def test_survive_day8_scored(self):
         state = MedusaState(
             stage="committed",
-            explosion_detected=True,
-            silver_row_count=0,
-            source_a_row_count=50,
-            match_rate=0.0,
-            grader_passed=False,
-        )
-        result = score_episode("clean_pipeline", state)
-        assert result.breakdown["no_explosion"] == 0.0
-
-    # ── dirty_integration (medium) ──────────────────────────────────────────
-
-    def test_dirty_integration_score_is_in_range(self):
-        state = self._run_happy_path(seed=1)
-        result = score_episode("dirty_integration", state)
-        assert 0.0 <= result.score <= 1.0
-
-    def test_dirty_integration_without_prep_penalized(self):
-        state = MedusaState(
-            stage="committed",
-            did_prep_a=False,
-            did_prep_b=False,
-            did_dedup_b=False,
-            did_join=True,
-            explosion_detected=False,
-            grader_passed=False,
-        )
-        result = score_episode("dirty_integration", state)
-        assert result.breakdown["prepped_before_join"] == 0.0
-        assert result.breakdown["deduped_before_join"] == 0.0
-
-    def test_dirty_integration_with_all_prereqs_scores_higher(self):
-        state_no_prep = MedusaState(
-            stage="committed", did_prep_a=False, did_prep_b=False,
-            did_dedup_b=False, did_join=True, explosion_detected=False, grader_passed=False,
-        )
-        state_prepped = MedusaState(
-            stage="committed", did_prep_a=True, did_prep_b=True,
-            did_dedup_b=True, did_join=True, explosion_detected=False, grader_passed=True,
-        )
-        no_prep = score_episode("dirty_integration", state_no_prep)
-        prepped = score_episode("dirty_integration", state_prepped)
-        assert prepped.score > no_prep.score
-
-    # ── full_medallion (hard) ───────────────────────────────────────────────
-
-    def test_full_medallion_score_is_in_range(self):
-        state = self._run_happy_path(seed=2)
-        result = score_episode("full_medallion", state)
-        assert 0.0 <= result.score <= 1.0
-
-    def test_full_medallion_without_sync_penalized(self):
-        state = MedusaState(
-            stage="committed",
-            did_sync_check=False,
-            did_evolve_schema=True,
-            scd_type="SCD-2",
+            current_day=9,
+            silver_row_count=400,
             grader_passed=True,
+            cumulative_reward=50.0,
         )
-        result = score_episode("full_medallion", state)
-        assert result.breakdown["sync_checked"] == 0.0
+        result = score_episode("survive_day8", state)
+        assert result.score > 0.3
+        assert result.passed
 
-    def test_full_medallion_scd1_penalized(self):
-        state_scd1 = MedusaState(
-            stage="committed", did_sync_check=True,
-            did_evolve_schema=True, scd_type="SCD-1", grader_passed=False,
-        )
-        state_scd2 = MedusaState(
-            stage="committed", did_sync_check=True,
-            did_evolve_schema=True, scd_type="SCD-2", grader_passed=True,
-        )
-        r1 = score_episode("full_medallion", state_scd1)
-        r2 = score_episode("full_medallion", state_scd2)
-        assert r2.score > r1.score
-
-    def test_full_medallion_schema_ok_uses_grader_report(self):
+    def test_gauntlet_30day_requires_committed(self):
         state = MedusaState(
-            stage="committed",
-            did_sync_check=True,
-            did_evolve_schema=True,
-            scd_type="SCD-2",
-            grader_passed=True,
-            grader_report=(
-                "=== MEDUSA Grader Audit ===\n"
-                "  Volume OK:    ✓\n"
-                "  Integrity OK: ✓\n"
-                "  Schema OK:    ✓\n"
-                "  History OK:   ✓\n"
-                "  Bonus Reward: +15.0\n"
-                "  PASS ✓"
-            ),
+            stage="failed",
+            current_day=30,
+            silver_row_count=1000,
+            grader_passed=False,
+            cumulative_reward=100.0,
         )
-
-        result = score_episode("full_medallion", state)
-        assert result.breakdown["schema_ok"] == TASKS["full_medallion"].scoring_rubric["schema_ok"]
+        result = score_episode("gauntlet_30day", state)
+        assert result.breakdown.get("completed_30_days", 0) == 0.0
 
     def test_unknown_task_raises(self):
         with pytest.raises(ValueError, match="Unknown task_id"):

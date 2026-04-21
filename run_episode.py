@@ -23,24 +23,56 @@ class RandomPolicy:
     name = "Random"
 
     def select_action(self, obs: MedusaObservation) -> MedusaActionType:
-        # Pick randomly from the 11 valid operators
-        return random.choice(list(MedusaActionType))
+        # Pick randomly from the 7 v4.0 actions
+        v4_actions = [
+            MedusaActionType.PROFILE_TABLE,
+            MedusaActionType.CLEAN_COLUMN,
+            MedusaActionType.DEDUPLICATE,
+            MedusaActionType.EVOLVE_SILVER_SCHEMA,
+            MedusaActionType.QUARANTINE_ROWS,
+            MedusaActionType.EXECUTE_MERGE,
+            MedusaActionType.COMMIT_DAY,
+        ]
+        return random.choice(v4_actions)
 
 
 class AlwaysCommitPolicy:
-    """Immediately terminates the episode by committing."""
+    """Immediately terminates the day by committing."""
     name = "Always Commit"
 
     def select_action(self, obs: MedusaObservation) -> MedusaActionType:
-        return MedusaActionType.COMMIT
+        return MedusaActionType.COMMIT_DAY
 
 
 class CleanPipelinePolicy:
-    """Hardcoded sequence to perfectly solve the Easy (Clean Pipeline) task."""
-    name = "Clean Pipeline Heuristic"
+    """Hardcoded v4.0 sequence: profile → clean → merge → commit per day."""
+    name = "Clean Pipeline Heuristic (v4.0)"
 
     def __init__(self):
-        # The correct sequence of operations for the clean pipeline scenario
+        # A simple repeating per-day sequence
+        self.day_sequence = [
+            ("PROFILE_TABLE", {"table": "bronze"}),
+            ("EXECUTE_MERGE", {}),
+            ("COMMIT_DAY", {}),
+        ]
+        self.step = 0
+
+    def select_action(self, obs: MedusaObservation) -> str:
+        idx = self.step % len(self.day_sequence)
+        self.step += 1
+        return self.day_sequence[idx][0]
+
+    def select_action_with_params(self, obs: MedusaObservation):
+        idx = self.step % len(self.day_sequence)
+        self.step += 1
+        return self.day_sequence[idx]
+
+
+class LegacyCleanPipelinePolicy:
+    """Hardcoded sequence using legacy Phase-1 actions."""
+    name = "Legacy Clean Pipeline Heuristic"
+
+    def __init__(self):
         self.sequence = [
             MedusaActionType.SYNC_CHECK,
             MedusaActionType.PREP_KEYS_A,
@@ -63,6 +95,7 @@ POLICY_REGISTRY = {
     "random": RandomPolicy,
     "always_commit": AlwaysCommitPolicy,
     "clean_pipeline": CleanPipelinePolicy,
+    "legacy_clean": LegacyCleanPipelinePolicy,
 }
 
 
@@ -72,11 +105,20 @@ def run_episode(env, policy, seed=0, verbose=False):
     step = 0
 
     while not result.done:
-        action_type = policy.select_action(result.observation)
+        if hasattr(policy, 'select_action_with_params'):
+            act_str, params = policy.select_action_with_params(result.observation)
+            action = MedusaAction(
+                action=f"<action>{act_str}</action><args>{{}}</args>",
+                params=params,
+            )
+        else:
+            action_type = policy.select_action(result.observation)
+            action = MedusaAction(action=action_type)
+
         if verbose:
-            print(f'  Step {step}: {action_type.value}')
-            
-        result = env.step(MedusaAction(action=action_type))
+            print(f'  Step {step}: {action.action}')
+
+        result = env.step(action)
         step += 1
 
     if verbose:

@@ -1,18 +1,22 @@
-"""MEDUSA deterministic post-commit grader.
+"""MEDUSA deterministic post-commit grader — v4.0.
 
-Runs a four-check audit after the agent issues COMMIT and returns a
-``GraderResult`` that feeds a bonus/penalty into the terminal reward.
+Runs deterministic Python assertions after the agent issues COMMIT_DAY.
+Returns a ``GraderResult`` with pass/fail + diagnostic report.
+
+The grader has **no reward logic** — that lives in ``_do_commit`` which
+uses the pass/fail flag to assign +Day or -100.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, Dict, List, Set
 
+import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    from .scenarios import Scenario
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -21,23 +25,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class GraderResult:
-    """Outcome of the post-commit audit."""
+    """Outcome of the post-commit deterministic audit."""
 
     passed: bool = False
-    volume_ok: bool = False    # Silver rows ≤ Source A rows (no duplicates from join)
-    integrity_ok: bool = False # Quarantine holds only true orphans
-    schema_ok: bool = False    # Silver has union of required columns
-    history_ok: bool = False   # SCD-2 timestamps non-overlapping
+    freshness_ok: bool = False      # Silver grew since day start
+    schema_ok: bool = False         # Silver columns ⊇ contract
+    type_integrity_ok: bool = False # revenue dtype == float64
+    null_integrity_ok: bool = False # No NULL user_id in Silver (Day 28+)
     failures: List[str] = field(default_factory=list)
-    bonus_reward: float = 0.0
     report: str = ""
-
-
-# Reward tuning
-_BONUS_ALL_PASS = +15.0
-_PENALTY_ALL_FAIL = -20.0
-_BONUS_PER_CHECK = +3.0
-_PENALTY_PER_FAIL = -5.0
 
 
 # ---------------------------------------------------------------------------
@@ -45,117 +41,92 @@ _PENALTY_PER_FAIL = -5.0
 # ---------------------------------------------------------------------------
 
 class Grader:
-    """Post-commit deterministic audit following MEDUSA spec §4."""
+    """Post-commit deterministic audit following MEDUSA v4.0 spec.
+
+    Four checks run on every COMMIT_DAY:
+      1. Freshness — Silver must have grown since day start.
+      2. Schema — Silver columns must be a superset of the Data Contract.
+      3. Type integrity — ``revenue`` must be float64 (persistent).
+      4. Null integrity — No NULL ``user_id`` rows in Silver (Day 28+).
+    """
 
     def audit(
         self,
         silver: pd.DataFrame,
-        quarantine: pd.DataFrame,
-        bronze_a: pd.DataFrame,
-        bronze_b: pd.DataFrame,
-        join_key: str,
-        join_type: str,
-        scd_type: int,
-        scenario: "Scenario",
+        silver_at_day_start: int,
+        current_day: int,
+        contract_columns: List[str],
     ) -> GraderResult:
-        """Run all four grader checks and compute bonus reward.
+        """Run all four grader checks.
 
         Args:
-            silver: The final Silver DataFrame after SCD merge.
-            quarantine: Rows from A that did not match B.
-            bronze_a: Original fact source (pre-cleaning).
-            bronze_b: Original dimension source (pre-cleaning).
-            join_key: Column used for the join.
-            join_type: "inner" | "left" | "anti"
-            scd_type: 1 or 2
-            scenario: The current episode's scenario (has tracked_cols etc.)
+            silver: The cumulative Silver DataFrame at commit time.
+            silver_at_day_start: Row count of Silver at the start of this day.
+            current_day: Which day (1–30) is being committed.
+            contract_columns: The current Data Contract column list.
 
         Returns:
-            GraderResult with individual check statuses and bonus_reward.
+            GraderResult with individual check statuses and report.
         """
         result = GraderResult()
 
-        # ── 1. Volume Check ──────────────────────────────────────────────
-        # For left joins, Silver should not exceed Source A row count.
-        if join_type == "left":
-            source_a_rows = len(bronze_a.dropna(subset=[join_key]))
-            silver_rows = len(silver[silver.get("is_current", pd.Series(True, index=silver.index)) == True]) if "is_current" in silver.columns else len(silver)  # noqa: E712
-            result.volume_ok = silver_rows <= source_a_rows * 1.05  # 5% tolerance
-            if not result.volume_ok:
+        # ── 1. Freshness Check ───────────────────────────────────────
+        silver_len = len(silver)
+        if silver_len > silver_at_day_start:
+            result.freshness_ok = True
+        else:
+            result.failures.append(
+                f"FRESHNESS_FAIL: Silver {silver_len} rows, "
+                f"was {silver_at_day_start} at day start."
+            )
+
+        # ── 2. Schema Check ─────────────────────────────────────────
+        if not silver.empty:
+            actual_cols = set(silver.columns)
+            expected_cols = set(contract_columns)
+            if expected_cols.issubset(actual_cols):
+                result.schema_ok = True
+            else:
+                missing = sorted(expected_cols - actual_cols)
                 result.failures.append(
-                    f"VOLUME_FAIL: Silver {silver_rows} rows > Source A {source_a_rows} rows"
+                    f"SCHEMA_FAIL: Missing columns: {missing}."
                 )
         else:
-            result.volume_ok = True  # Not applicable for inner/anti joins
+            result.failures.append("SCHEMA_FAIL: Silver is empty.")
 
-        # ── 2. Integrity Check ───────────────────────────────────────────
-        # Quarantine rows should be true orphans (no match in B even after cleaning).
-        if not quarantine.empty and join_key in quarantine.columns:
-            dim_keys = set(bronze_b[join_key].dropna().astype(str).str.strip())
-            quarantine_keys = set(quarantine[join_key].dropna().astype(str).str.strip())
-            # Orphan = quarantine key truly not in dim
-            could_join = quarantine_keys & dim_keys
-            if could_join:
-                result.integrity_ok = False
+        # ── 3. Type Integrity (persistent) ───────────────────────────
+        if not silver.empty and "revenue" in silver.columns:
+            if silver["revenue"].dtype == np.float64:
+                result.type_integrity_ok = True
+            else:
                 result.failures.append(
-                    f"INTEGRITY_FAIL: {len(could_join)} quarantine row(s) could have "
-                    f"been joined if keys were cleaned."
+                    f"TYPE_FAIL: revenue dtype is {silver['revenue'].dtype}, "
+                    f"expected float64."
+                )
+        else:
+            # No revenue column = not applicable, passes by default
+            result.type_integrity_ok = True
+
+        # ── 4. Null Integrity (Day 28+) ──────────────────────────────
+        if current_day >= 28 and not silver.empty and "user_id" in silver.columns:
+            null_count = int(silver["user_id"].isnull().sum())
+            if null_count > 0:
+                result.failures.append(
+                    f"NULL_FAIL: {null_count} NULL user_id rows in Silver "
+                    f"(should be quarantined)."
                 )
             else:
-                result.integrity_ok = True
+                result.null_integrity_ok = True
         else:
-            result.integrity_ok = True  # Empty quarantine is fine
+            result.null_integrity_ok = True
 
-        # ── 3. Schema Check ──────────────────────────────────────────────
-        # Silver must contain all required columns from A and B.
-        required_from_a = [c for c in bronze_a.columns if c != join_key]
-        required_from_b = [c for c in bronze_b.columns if c != join_key]
-        required = set(required_from_a + required_from_b + scenario.new_cols_a + scenario.new_cols_b)
-        silver_cols = set(silver.columns)
-        missing = required - silver_cols
-        if missing:
-            result.schema_ok = False
-            result.failures.append(f"SCHEMA_FAIL: Missing columns in Silver: {sorted(missing)}")
-        else:
-            result.schema_ok = True
-
-        # ── 4. History Check (SCD-2 only) ────────────────────────────────
-        if scd_type == 2 and "valid_from" in silver.columns and "valid_to" in silver.columns:
-            overlap_found = False
-            for key_val, group in silver.groupby(join_key):
-                if len(group) < 2:
-                    continue
-                closed = group[group["valid_to"].notna()].sort_values("valid_from")
-                for i in range(len(closed) - 1):
-                    vt_i = closed.iloc[i]["valid_to"]
-                    vf_next = closed.iloc[i + 1]["valid_from"]
-                    if pd.notna(vt_i) and pd.notna(vf_next) and vt_i > vf_next:
-                        overlap_found = True
-                        break
-                if overlap_found:
-                    break
-            if overlap_found:
-                result.history_ok = False
-                result.failures.append("HISTORY_FAIL: SCD-2 timestamps overlap for some keys.")
-            else:
-                result.history_ok = True
-        else:
-            result.history_ok = True  # Not applicable for SCD-1
-
-        # ── Compute bonus ────────────────────────────────────────────────
-        checks = [result.volume_ok, result.integrity_ok, result.schema_ok, result.history_ok]
-        passed_count = sum(checks)
-        failed_count = len(checks) - passed_count
-
-        result.passed = all(checks)
-
-        if result.passed:
-            result.bonus_reward = _BONUS_ALL_PASS
-        elif failed_count == len(checks):
-            result.bonus_reward = _PENALTY_ALL_FAIL
-        else:
-            result.bonus_reward = passed_count * _BONUS_PER_CHECK - failed_count * _PENALTY_PER_FAIL
-
+        # ── Result ───────────────────────────────────────────────────
+        result.passed = all([
+            result.freshness_ok,
+            result.schema_ok,
+            result.type_integrity_ok,
+            result.null_integrity_ok,
+        ])
         result.report = _build_report(result)
         return result
 
@@ -165,12 +136,11 @@ class Grader:
 # ---------------------------------------------------------------------------
 
 def _build_report(result: GraderResult) -> str:
-    lines = ["=== MEDUSA Grader Audit ==="]
-    lines.append(f"  Volume OK:    {'✓' if result.volume_ok else '✗'}")
-    lines.append(f"  Integrity OK: {'✓' if result.integrity_ok else '✗'}")
-    lines.append(f"  Schema OK:    {'✓' if result.schema_ok else '✗'}")
-    lines.append(f"  History OK:   {'✓' if result.history_ok else '✗'}")
-    lines.append(f"  Bonus Reward: {result.bonus_reward:+.1f}")
+    lines = ["=== MEDUSA v4.0 Grader Audit ==="]
+    lines.append(f"  Freshness OK:      {'✓' if result.freshness_ok else '✗'}")
+    lines.append(f"  Schema OK:         {'✓' if result.schema_ok else '✗'}")
+    lines.append(f"  Type Integrity OK: {'✓' if result.type_integrity_ok else '✗'}")
+    lines.append(f"  Null Integrity OK: {'✓' if result.null_integrity_ok else '✗'}")
     if result.failures:
         lines.append("  Failures:")
         for f in result.failures:

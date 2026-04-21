@@ -1,21 +1,20 @@
-"""MEDUSA Task Definitions.
+"""MEDUSA Task Definitions — v4.0.
 
-Twelve formally graded tasks covering multiple easy, medium, and hard
-pathways. Each task returns a deterministic score in [0.0, 1.0] after
-COMMIT.
+Six tasks aligned with the 30-day gauntlet architecture.  Each task scores a
+completed episode using v4.0 state flags (current_day, silver_row_count,
+total_quarantine_rows, did_evolve_schema, etc.).
 
 Usage::
 
-    from envs.medusa_env.tasks import TASKS, score_episode
+    from medusa_env.tasks import TASKS, score_episode
 
-    task = TASKS["clean_pipeline"]          # easy
-    env = MedusaEnv(n_fact_rows=200, n_dim_rows=150)
+    task = TASKS["basic_pipeline"]   # easy
+    env = MedusaEnv(n_fact_rows=50)
     obs = env.reset(seed=task.seed)
 
     # ... agent takes actions ...
-    obs = env.step(MedusaAction(action=MedusaActionType.COMMIT))
 
-    result = score_episode(task.id, env.state, env._tables)
+    result = score_episode(task.id, env.state)
     print(f"Score: {result.score:.2f}  ({result.grade})")
 """
 
@@ -24,8 +23,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+
 if TYPE_CHECKING:
-    from .medusa_env import _EpisodeTables
+    from server.medusa_env import _EpisodeTables
     from .models import MedusaState
 
 
@@ -40,7 +40,7 @@ class Task:
     id: str
     name: str
     difficulty: str          # "easy" | "medium" | "hard"
-    seed: int                # Controls ScenarioGenerator variant
+    seed: int                # Controls ScenarioGenerator / DayDataGenerator seed
     description: str
     success_criteria: List[str]
     scoring_rubric: Dict[str, float]
@@ -75,389 +75,214 @@ def _grade(score: float) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Task catalogue
+# Task catalogue — v4.0 (30-day gauntlet native)
 # ---------------------------------------------------------------------------
 
 TASKS: Dict[str, Task] = {
 
-    # ── EASY: Clean Pipeline ────────────────────────────────────────────────
-    "clean_pipeline": Task(
-        id="clean_pipeline",
-        name="Clean Pipeline",
+    # ── EASY: Basic Pipeline ───────────────────────────────────────────────
+    "basic_pipeline": Task(
+        id="basic_pipeline",
+        name="Basic Pipeline",
         difficulty="easy",
-        seed=0,
+        seed=42,
         description=(
-            "Both sources are fresh. Join keys are clean and unique. "
-            "The agent must verify freshness, prepare keys, join, apply SCD, "
-            "and commit without triggering a row explosion."
+            "The agent must survive at least 5 days of the 30-day gauntlet, "
+            "cleaning anomalies, merging daily batches into Silver, and "
+            "committing each day without crashing."
         ),
         success_criteria=[
-            "COMMIT issued (episode finalized)",
-            "No Cartesian explosion detected",
-            "Silver row count ≤ Source A row count",
-            "match_rate > 0.80 after join",
+            "Survive at least 5 days (current_day >= 6)",
+            "Silver table is non-empty",
+            "No terminal crash",
+            "Cumulative reward > 0",
         ],
         scoring_rubric={
-            "committed":        0.20,   # Agent issued COMMIT
-            "no_explosion":     0.25,   # No row explosion
-            "volume_ok":        0.20,   # Silver ≤ Source A rows
-            "high_match":       0.20,   # match_rate > 0.80
-            "grader_pass":      0.15,   # All 4 grader checks pass
+            "survived_5_days":   0.30,
+            "silver_built":      0.20,
+            "no_crash":          0.20,
+            "positive_reward":   0.15,
+            "grader_passed":     0.15,
         },
     ),
 
-    # ── MEDIUM: Dirty Integration ───────────────────────────────────────────
-    "dirty_integration": Task(
-        id="dirty_integration",
-        name="Dirty Key Integration",
+    # ── MEDIUM: Survive Day 8 (Type Trap) ──────────────────────────────────
+    "survive_day8": Task(
+        id="survive_day8",
+        name="Survive Day 8 — Type Trap",
         difficulty="medium",
-        seed=1,
+        seed=42,
         description=(
-            "Source A has NULLs and whitespace in join keys. "
-            "Source B has duplicate keys that can cause row explosion. "
-            "The agent must PREP_KEYS and DEDUPLICATE before joining, "
-            "and correctly quarantine unresolvable orphans."
+            "Day 8 injects revenue as '$50.50' strings. The agent must "
+            "strip the '$' and cast to float64 before committing. "
+            "The grader checks Silver.dtypes['revenue'] == float64."
         ),
         success_criteria=[
-            "PREP_KEYS_A issued before EXECUTE_JOIN",
-            "PREP_KEYS_B issued before EXECUTE_JOIN",
-            "DEDUPLICATE_B issued before EXECUTE_JOIN",
-            "No row explosion",
-            "Quarantine integrity check passes",
-        ],
-        scoring_rubric={
-            "committed":        0.10,
-            "prepped_before_join": 0.20,  # Both PREP_KEYS before join
-            "deduped_before_join": 0.20,  # DEDUP before join
-            "no_explosion":     0.25,
-            "integrity_ok":     0.15,     # Quarantine holds true orphans only
-            "grader_pass":      0.10,
-        },
-    ),
-
-    # ── HARD: Full Medallion Integration ────────────────────────────────────
-    "full_medallion": Task(
-        id="full_medallion",
-        name="Full Medallion Integration",
-        difficulty="hard",
-        seed=2,
-        description=(
-            "Source A is stale (>6h old). Source B has new schema columns "
-            "not registered in Silver. The agent must: check freshness, "
-            "evolve the schema, clean keys, deduplicate, execute a left join, "
-            "apply SCD-2 for tracked columns, and pass all grader checks."
-        ),
-        success_criteria=[
-            "SYNC_CHECK issued before any join",
-            "EVOLVE_SCHEMA issued before COMMIT",
-            "SCD-2 applied (not SCD-1) for tracked column",
-            "Silver schema contains new columns from drift",
-            "All 4 grader checks pass",
-        ],
-        scoring_rubric={
-            "committed":        0.05,
-            "sync_checked":     0.15,     # SYNC_CHECK before join
-            "schema_evolved":   0.15,     # EVOLVE_SCHEMA called
-            "used_scd2":        0.20,     # Chose SCD-2 over SCD-1
-            "schema_ok":        0.20,     # Silver has all required columns
-            "grader_pass":      0.25,     # All 4 grader checks pass
-        },
-    ),
-
-    # ── EASY: Schema Bootstrap ─────────────────────────────────────────────
-    "schema_bootstrap": Task(
-        id="schema_bootstrap",
-        name="Schema Bootstrap",
-        difficulty="easy",
-        seed=3,
-        description=(
-            "Fresh sources arrive with new columns in both Bronze tables. "
-            "The agent must evolve the Silver schema, execute a clean join, "
-            "land a non-empty Silver table, and commit without row explosion."
-        ),
-        success_criteria=[
-            "EVOLVE_SCHEMA issued before COMMIT",
-            "No row explosion",
-            "Silver contains the joined columns after drift",
+            "Survive past Day 8 (current_day >= 9)",
+            "Silver revenue column is float64",
             "Silver table is non-empty",
         ],
         scoring_rubric={
-            "committed":           0.15,
-            "no_explosion":        0.20,
-            "schema_evolved":      0.25,
-            "schema_materialized": 0.20,
-            "silver_built":        0.20,
+            "survived_day8":     0.35,
+            "revenue_is_float":  0.30,
+            "silver_built":      0.15,
+            "grader_passed":     0.20,
         },
     ),
 
-    # ── MEDIUM: Dedup Guardrail ────────────────────────────────────────────
-    "dedup_guardrail": Task(
-        id="dedup_guardrail",
-        name="Dedup Guardrail",
+    # ── MEDIUM: Survive Day 14 (OOM Trap) ──────────────────────────────────
+    "survive_day14": Task(
+        id="survive_day14",
+        name="Survive Day 14 — OOM Trap",
         difficulty="medium",
-        seed=4,
+        seed=42,
         description=(
-            "Dirty join keys and duplicate Dimension rows increase the risk of "
-            "row explosion. The agent must prep keys, deduplicate Source B, "
-            "produce a non-empty Silver table, and commit cleanly."
+            "Day 14 injects massive duplicate user_ids. The agent must "
+            "profile → deduplicate → merge to avoid exceeding the memory "
+            "limit. Without dedup, EXECUTE_MERGE will BLOCK."
         ),
         success_criteria=[
-            "PREP_KEYS_A and PREP_KEYS_B issued before join",
-            "DEDUPLICATE_B issued before join",
-            "No row explosion",
+            "Survive past Day 14 (current_day >= 15)",
+            "Deduplication was performed on Day 14",
             "Silver table is non-empty",
-            "Grader passes",
         ],
         scoring_rubric={
-            "committed":           0.10,
-            "prepped_before_join": 0.15,
-            "deduped_before_join": 0.25,
-            "no_explosion":        0.25,
-            "silver_built":        0.10,
-            "grader_pass":         0.15,
+            "survived_day14":    0.35,
+            "dedup_used":        0.25,
+            "silver_built":      0.15,
+            "grader_passed":     0.25,
         },
     ),
 
-    # ── HARD: Stale Sync Recovery ──────────────────────────────────────────
-    "stale_sync_recovery": Task(
-        id="stale_sync_recovery",
-        name="Stale Sync Recovery",
-        difficulty="hard",
-        seed=5,
-        description=(
-            "Source A is stale and the pipeline must not proceed blindly. "
-            "The agent must verify freshness, recover a high-match join, "
-            "build Silver, and still pass the final audit."
-        ),
-        success_criteria=[
-            "SYNC_CHECK issued before any join",
-            "No row explosion",
-            "match_rate > 0.80 after join",
-            "Silver table is non-empty",
-            "Grader passes",
-        ],
-        scoring_rubric={
-            "committed":     0.05,
-            "sync_checked":  0.30,
-            "no_explosion":  0.20,
-            "high_match":    0.15,
-            "silver_built":  0.15,
-            "grader_pass":   0.15,
-        },
-    ),
-
-    # ── EASY: Fresh Join Baseline ──────────────────────────────────────────
-    "fresh_join_baseline": Task(
-        id="fresh_join_baseline",
-        name="Fresh Join Baseline",
-        difficulty="easy",
-        seed=6,
-        description=(
-            "A clean baseline task that rewards a simple, efficient Bronze→Silver "
-            "run. The agent should avoid unnecessary actions while producing a "
-            "high-match, non-exploding join and a usable Silver table."
-        ),
-        success_criteria=[
-            "COMMIT issued",
-            "No row explosion",
-            "match_rate > 0.80 after join",
-            "Silver table is non-empty",
-            "Episode completed efficiently",
-        ],
-        scoring_rubric={
-            "committed":     0.15,
-            "no_explosion":  0.25,
-            "high_match":    0.25,
-            "silver_built":  0.20,
-            "efficient_run": 0.15,
-        },
-    ),
-
-    # ── HARD: Stale History Guard ──────────────────────────────────────────
-    "stale_history_guard": Task(
-        id="stale_history_guard",
-        name="Stale History Guard",
-        difficulty="hard",
-        seed=7,
-        description=(
-            "A stale-source episode where the agent must both verify freshness "
-            "and preserve historical correctness. The task emphasizes SCD-2 "
-            "usage and proper history columns in Silver."
-        ),
-        success_criteria=[
-            "SYNC_CHECK issued before any join",
-            "SCD-2 used instead of SCD-1",
-            "Silver table is non-empty",
-            "Silver contains history columns",
-            "Grader passes",
-        ],
-        scoring_rubric={
-            "committed":       0.05,
-            "sync_checked":    0.20,
-            "used_scd2":       0.25,
-            "silver_built":    0.15,
-            "history_columns": 0.15,
-            "grader_pass":     0.20,
-        },
-    ),
-
-    # ── MEDIUM: Orphan Quarantine ──────────────────────────────────────────
-    "orphan_quarantine": Task(
-        id="orphan_quarantine",
-        name="Orphan Quarantine",
+    # ── MEDIUM: Survive Day 21 (Schema Drift) ──────────────────────────────
+    "survive_day21": Task(
+        id="survive_day21",
+        name="Survive Day 21 — Schema Drift",
         difficulty="medium",
-        seed=8,
+        seed=42,
         description=(
-            "Dirty keys create unmatched Fact rows that should not be silently "
-            "dropped. The agent must prep keys, choose a left join, preserve "
-            "a meaningful quarantine set, and keep audit integrity intact."
+            "Day 21 introduces a new 'promo_code' column. The agent must "
+            "call EVOLVE_SILVER_SCHEMA to add the column to the Data "
+            "Contract before committing."
         ),
         success_criteria=[
-            "PREP_KEYS_A and PREP_KEYS_B issued before join",
-            "Left join used",
+            "Survive past Day 21 (current_day >= 22)",
+            "EVOLVE_SILVER_SCHEMA was called",
+            "Silver contains promo_code column",
+        ],
+        scoring_rubric={
+            "survived_day21":    0.30,
+            "schema_evolved":    0.30,
+            "promo_in_silver":   0.20,
+            "grader_passed":     0.20,
+        },
+    ),
+
+    # ── MEDIUM: Survive Day 28 (Null Nuke) ─────────────────────────────────
+    "survive_day28": Task(
+        id="survive_day28",
+        name="Survive Day 28 — Null Nuke",
+        difficulty="medium",
+        seed=42,
+        description=(
+            "Day 28 has 20% of user_id as NULL. The agent must "
+            "QUARANTINE_ROWS where user_id IS NULL before merging. "
+            "The grader checks that no NULL user_id rows are in Silver."
+        ),
+        success_criteria=[
+            "Survive past Day 28 (current_day >= 29)",
             "Quarantine contains rows",
-            "No row explosion",
-            "Integrity checks pass",
+            "No NULL user_id in Silver",
         ],
         scoring_rubric={
-            "committed":           0.10,
-            "prepped_before_join": 0.15,
-            "left_join_used":      0.20,
-            "quarantine_nonempty": 0.20,
-            "integrity_ok":        0.20,
-            "no_explosion":        0.15,
+            "survived_day28":      0.30,
+            "quarantine_used":     0.25,
+            "no_null_in_silver":   0.25,
+            "grader_passed":       0.20,
         },
     ),
 
-    # ── MEDIUM: Drift Alignment ────────────────────────────────────────────
-    "drift_alignment": Task(
-        id="drift_alignment",
-        name="Drift Alignment",
-        difficulty="medium",
-        seed=9,
-        description=(
-            "Schema drift introduces new columns, but the pipeline is otherwise "
-            "clean. The agent must evolve the schema, use the audited left-join "
-            "path, materialize the new shape in Silver, and commit successfully."
-        ),
-        success_criteria=[
-            "EVOLVE_SCHEMA issued before COMMIT",
-            "Left join used",
-            "Silver contains the joined columns after drift",
-            "Silver table is non-empty",
-            "Grader passes",
-        ],
-        scoring_rubric={
-            "committed":           0.10,
-            "schema_evolved":      0.25,
-            "left_join_used":      0.15,
-            "schema_materialized": 0.25,
-            "silver_built":        0.10,
-            "grader_pass":         0.15,
-        },
-    ),
-
-    # ── EASY: Snapshot Upsert ──────────────────────────────────────────────
-    "snapshot_upsert": Task(
-        id="snapshot_upsert",
-        name="Snapshot Upsert",
-        difficulty="easy",
-        seed=10,
-        description=(
-            "A clean snapshot-style load where SCD-1 is sufficient. The agent "
-            "should choose overwrite semantics, maintain safe volume, and land "
-            "a non-empty Silver table without introducing join problems."
-        ),
-        success_criteria=[
-            "SCD-1 used instead of SCD-2",
-            "No row explosion",
-            "Silver row count ≤ Source A row count",
-            "Silver table is non-empty",
-            "Grader passes",
-        ],
-        scoring_rubric={
-            "committed":     0.10,
-            "no_explosion":  0.20,
-            "used_scd1":     0.25,
-            "volume_ok":     0.20,
-            "silver_built":  0.15,
-            "grader_pass":   0.10,
-        },
-    ),
-
-    # ── HARD: Schema History Guard ─────────────────────────────────────────
-    "schema_history_guard": Task(
-        id="schema_history_guard",
-        name="Schema History Guard",
+    # ── HARD: Full 30-Day Gauntlet ─────────────────────────────────────────
+    "gauntlet_30day": Task(
+        id="gauntlet_30day",
+        name="Full 30-Day Gauntlet",
         difficulty="hard",
-        seed=11,
+        seed=42,
         description=(
-            "Schema drift and historical tracking requirements arrive together. "
-            "The agent must evolve schema, materialize the merged columns in "
-            "Silver, use SCD-2, and preserve history metadata through commit."
+            "Complete all 30 days of the data pipeline gauntlet. "
+            "The agent must handle all 4 trap days (8, 14, 21, 28), "
+            "maintain the quarantine ceiling ≤ 5% (excluding Day 28), "
+            "and earn the +100 completion bonus."
         ),
         success_criteria=[
-            "EVOLVE_SCHEMA issued before COMMIT",
-            "SCD-2 used instead of SCD-1",
-            "Silver contains the joined columns after drift",
-            "Silver contains history columns",
-            "Grader passes",
+            "Complete all 30 days (stage == 'committed')",
+            "All grader checks passed",
+            "Quarantine ceiling ≤ 5% (excluding Day 28)",
+            "Cumulative reward > 0",
         ],
         scoring_rubric={
-            "committed":           0.05,
-            "schema_evolved":      0.20,
-            "used_scd2":           0.20,
-            "schema_materialized": 0.20,
-            "history_columns":     0.15,
-            "grader_pass":         0.20,
+            "completed_30_days":   0.25,
+            "all_graders_passed":  0.20,
+            "quarantine_ceiling":  0.20,
+            "positive_reward":     0.15,
+            "high_reward":         0.20,
         },
     ),
 }
 
 
+# ---------------------------------------------------------------------------
+# Scoring helpers
+# ---------------------------------------------------------------------------
+
 def _build_checks(
     state: "MedusaState",
     tables: "Optional[_EpisodeTables]",
 ) -> Dict[str, bool]:
-    """Build reusable boolean checks used across task rubrics."""
-    silver_cols = set(tables.silver.columns) if tables is not None else set()
-    joined_cols = set(tables.joined.columns) if tables is not None else set()
-    bronze_a_cols = set(tables.bronze_a.columns) if tables is not None else set()
-    bronze_b_cols = set(tables.bronze_b.columns) if tables is not None else set()
-    shared_source_cols = bronze_a_cols & bronze_b_cols
-    # Bronze A/B currently share only the join key, so excluding the overlap
-    # keeps this aligned with the grader's "all non-key columns" schema check.
-    required_schema_cols = (bronze_a_cols | bronze_b_cols) - shared_source_cols
-    schema_ok = None
+    """Build reusable boolean checks used across v4.0 task rubrics."""
+    silver_cols = set()
+    if tables is not None and not tables.silver.empty:
+        silver_cols = set(tables.silver.columns)
 
-    for line in state.grader_report.splitlines():
-        if line.strip().startswith("Schema OK:"):
-            schema_ok = "✓" in line
-            break
+    import numpy as np
+    revenue_is_float = False
+    if tables is not None and not tables.silver.empty and "revenue" in tables.silver.columns:
+        revenue_is_float = tables.silver["revenue"].dtype == np.float64
 
-    if schema_ok is None:
-        schema_ok = bool(required_schema_cols) and required_schema_cols.issubset(silver_cols)
+    null_in_silver = True  # default: ok
+    if tables is not None and not tables.silver.empty and "user_id" in tables.silver.columns:
+        null_in_silver = int(tables.silver["user_id"].isnull().sum()) == 0
 
     return {
-        "volume_ok": (
-            state.silver_row_count <= state.source_a_row_count * 1.05
-            and state.silver_row_count > 0
-        ),
+        # Day survival
+        "survived_5_days": state.current_day >= 6 or state.stage == "committed",
+        "survived_day8": state.current_day >= 9 or state.stage == "committed",
+        "survived_day14": state.current_day >= 15 or state.stage == "committed",
+        "survived_day21": state.current_day >= 22 or state.stage == "committed",
+        "survived_day28": state.current_day >= 29 or state.stage == "committed",
+        "completed_30_days": state.stage == "committed",
+
+        # Pipeline basics
         "silver_built": state.silver_row_count > 0,
-        "high_match": state.match_rate >= 0.80,
-        "prepped_before_join": state.did_prep_a and state.did_prep_b and state.did_join,
-        "deduped_before_join": state.did_dedup_b and state.did_join,
-        "integrity_ok": state.grader_passed,
-        "sync_checked": state.did_sync_check,
+        "no_crash": state.stage != "failed",
+        "positive_reward": state.cumulative_reward > 0,
+        "high_reward": state.cumulative_reward >= 500,
+        "grader_passed": state.grader_passed,
+        "all_graders_passed": state.grader_passed and state.stage == "committed",
+
+        # Trap-specific
+        "revenue_is_float": revenue_is_float,
+        "dedup_used": state.did_dedup_today or state.did_dedup_b,
         "schema_evolved": state.did_evolve_schema,
-        "used_scd2": state.scd_type == "SCD-2",
-        "used_scd1": state.scd_type == "SCD-1",
-        "schema_ok": schema_ok,
-        "schema_materialized": bool(joined_cols) and joined_cols.issubset(silver_cols),
-        "history_columns": {"valid_from", "valid_to", "is_current"}.issubset(silver_cols),
-        "left_join_used": state.join_type == "left",
-        "quarantine_nonempty": state.quarantine_row_count > 0,
-        "efficient_run": state.step_idx <= 8,
+        "promo_in_silver": "promo_code" in silver_cols,
+        "quarantine_used": state.total_quarantine_rows > 0,
+        "no_null_in_silver": null_in_silver,
+
+        # Quarantine ceiling (Day 28 excluded)
+        "quarantine_ceiling": (
+            (state.total_quarantine_rows - state.day28_quarantine_rows)
+            / max(state.total_raw_rows, 1)
+        ) <= 0.05 if state.total_raw_rows > 0 else True,
     }
 
 
@@ -472,7 +297,7 @@ def _apply_check(
     """Apply a boolean check to the rubric and attach a note on failure."""
     if key not in rubric:
         return
-    ok = checks[key]
+    ok = checks.get(key, False)
     breakdown[key] = rubric[key] if ok else 0.0
     if not ok:
         notes.append(failure_note)
@@ -487,12 +312,12 @@ def score_episode(
     state: "MedusaState",
     tables: "Optional[_EpisodeTables]" = None,
 ) -> TaskResult:
-    """Score a completed MEDUSA episode against the named task.
+    """Score a completed MEDUSA v4.0 episode against the named task.
 
     Args:
         task_id: Any task id defined in ``TASKS``.
         state: Final ``MedusaState`` after the episode ended.
-        tables: Episode tables (used for schema checks). Optional.
+        tables: Episode tables (used for Silver inspection). Optional.
 
     Returns:
         TaskResult with score in [0.0, 1.0].
@@ -505,217 +330,26 @@ def score_episode(
         return TaskResult(
             task_id=task_id, score=0.0, grade="F",
             breakdown={}, passed=False,
-            notes=["Episode not finished — COMMIT was never issued."],
+            notes=["Episode not finished — COMMIT_DAY was never issued."],
         )
 
     breakdown: Dict[str, float] = {}
     notes: List[str] = []
     rubric = task.scoring_rubric
-    committed = state.stage == "committed"
     checks = _build_checks(state, tables)
 
-    # ── Shared criteria ──────────────────────────────────────────────────
-    if "committed" in rubric:
-        breakdown["committed"] = rubric["committed"] if committed else 0.0
-
-    if "no_explosion" in rubric:
-        ok = not state.explosion_detected
-        breakdown["no_explosion"] = rubric["no_explosion"] if ok else 0.0
-        if not ok:
-            notes.append("Row explosion was detected — heavy penalty applied.")
-
-    if "grader_pass" in rubric:
-        breakdown["grader_pass"] = rubric["grader_pass"] if state.grader_passed else 0.0
-
-    # ── Task-specific criteria ────────────────────────────────────────────
-
-    if task_id == "clean_pipeline":
-        _apply_check(
-            breakdown, rubric, checks, notes, "volume_ok",
-            "Silver volume was empty or exceeded the allowed source volume.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "high_match",
-            f"match_rate={state.match_rate:.1%} — target >80%.",
-        )
-
-    elif task_id == "dirty_integration":
-        _apply_check(
-            breakdown, rubric, checks, notes, "prepped_before_join",
-            "Agent joined without prepping keys first.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "deduped_before_join",
-            "Agent joined without deduplicating Dimension.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "integrity_ok",
-            "Quarantine integrity did not pass the final audit.",
-        )
-
-    elif task_id == "full_medallion":
-        _apply_check(
-            breakdown, rubric, checks, notes, "sync_checked",
-            "SYNC_CHECK was never called — stale source not verified.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_evolved",
-            "EVOLVE_SCHEMA never called — new columns may be missing from Silver.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "used_scd2",
-            f"Used SCD-1 instead of SCD-2 (scd_type={state.scd_type!r}).",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_ok",
-            "Schema requirements did not pass the final audit.",
-        )
-
-    elif task_id == "schema_bootstrap":
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_evolved",
-            "EVOLVE_SCHEMA was required before the schema-drift commit.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_materialized",
-            "Silver did not materialize the joined schema after drift.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-
-    elif task_id == "dedup_guardrail":
-        _apply_check(
-            breakdown, rubric, checks, notes, "prepped_before_join",
-            "Join executed before key preparation completed.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "deduped_before_join",
-            "Dimension duplicates were not removed before join.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-
-    elif task_id == "stale_sync_recovery":
-        _apply_check(
-            breakdown, rubric, checks, notes, "sync_checked",
-            "SYNC_CHECK was required for the stale-source recovery task.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "high_match",
-            f"match_rate={state.match_rate:.1%} — target >80% after stale recovery.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-
-    elif task_id == "fresh_join_baseline":
-        _apply_check(
-            breakdown, rubric, checks, notes, "high_match",
-            f"match_rate={state.match_rate:.1%} — target >80% for the clean baseline.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "efficient_run",
-            f"Episode used {state.step_idx} steps — target is 8 or fewer.",
-        )
-
-    elif task_id == "stale_history_guard":
-        _apply_check(
-            breakdown, rubric, checks, notes, "sync_checked",
-            "SYNC_CHECK was required before processing stale data.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "used_scd2",
-            f"Used {state.scd_type!r} instead of SCD-2 for history preservation.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "history_columns",
-            "Silver is missing the SCD-2 history columns.",
-        )
-
-    elif task_id == "orphan_quarantine":
-        _apply_check(
-            breakdown, rubric, checks, notes, "prepped_before_join",
-            "Join executed before key preparation completed.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "left_join_used",
-            f"Expected LEFT join for orphan quarantine, got {state.join_type!r}.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "quarantine_nonempty",
-            "Expected unresolved rows to appear in quarantine.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "integrity_ok",
-            "Quarantine integrity did not pass the final audit.",
-        )
-
-    elif task_id == "drift_alignment":
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_evolved",
-            "EVOLVE_SCHEMA was required before the schema-drift commit.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "left_join_used",
-            f"Expected LEFT join for the audited drift path, got {state.join_type!r}.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_materialized",
-            "Silver did not materialize the joined schema after drift.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-
-    elif task_id == "snapshot_upsert":
-        _apply_check(
-            breakdown, rubric, checks, notes, "used_scd1",
-            f"Used {state.scd_type!r} instead of SCD-1 for the snapshot upsert task.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "volume_ok",
-            "Silver volume was empty or exceeded the allowed source volume.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "silver_built",
-            "Silver table was never populated.",
-        )
-
-    elif task_id == "schema_history_guard":
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_evolved",
-            "EVOLVE_SCHEMA was required before the schema-history commit.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "used_scd2",
-            f"Used {state.scd_type!r} instead of SCD-2 for history preservation.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "schema_materialized",
-            "Silver did not materialize the joined schema after drift.",
-        )
-        _apply_check(
-            breakdown, rubric, checks, notes, "history_columns",
-            "Silver is missing the SCD-2 history columns.",
-        )
+    # Apply all rubric checks generically
+    for key in rubric:
+        failure_note = f"{key} check failed."
+        if key in checks:
+            _apply_check(breakdown, rubric, checks, notes, key, failure_note)
+        else:
+            # Unknown check key — award 0
+            breakdown[key] = 0.0
+            notes.append(f"Unknown rubric key: {key}")
 
     # ── Final score ───────────────────────────────────────────────────────
     total = sum(breakdown.values())
-    # Clip to [0, 1] (row explosion can make total negative from reward engine)
     score = max(0.1, min(0.95, total))
     passed = score >= 0.10
 

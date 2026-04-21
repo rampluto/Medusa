@@ -1,36 +1,219 @@
-"""MEDUSA ETL operators.
+"""MEDUSA ETL operators — v4.0.
 
-Each operator is a stateless function that takes DataFrame(s) and returns a
-(result_df_or_None, metrics_dict) tuple. The environment calls these from
-``step()`` and passes the metrics to the reward engine.
+Each v4.0 operator is a stateless function that takes DataFrame(s) and returns
+a result tuple.  The environment's ``_do_*`` methods delegate data
+transformations here and keep book-keeping (state, rewards) at the env level.
+
+Legacy Phase-1 operators (sync_check, prep_keys, execute_join, apply_scd) are
+retained at the bottom for backward compatibility with existing tests.
 """
 
 from __future__ import annotations
 
-import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 
 
-# ---------------------------------------------------------------------------
-# Type alias
-# ---------------------------------------------------------------------------
-
+# Type aliases
 Metrics = Dict[str, Any]
 OpResult = Tuple[Optional[pd.DataFrame], Metrics]
 
 
-# ---------------------------------------------------------------------------
-# Operator: sync_check
-# ---------------------------------------------------------------------------
+# ═══════════════════════════════════════════════════════════════════════════
+# v4.0 Operators (used by MedusaEnv._do_* methods)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def profile_table(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Profile a DataFrame: return per-column dtype, null %, unique count, duplicates.
+
+    Args:
+        df: The daily cleaned DataFrame to profile.
+
+    Returns:
+        Dict mapping column name → {dtype, null_pct, n_unique, n_duplicates}.
+    """
+    profile: Dict[str, Dict[str, Any]] = {}
+    for col in df.columns:
+        null_pct = round(df[col].isnull().mean() * 100, 1)
+        dtype = str(df[col].dtype)
+        n_unique = int(df[col].nunique())
+        n_dupes = int(df[col].duplicated().sum())
+        profile[col] = {
+            "dtype": dtype,
+            "null_pct": null_pct,
+            "n_unique": n_unique,
+            "n_duplicates": n_dupes,
+        }
+    return profile
+
+
+def clean_column(
+    df: pd.DataFrame, col: str, op: str
+) -> Tuple[pd.DataFrame, int]:
+    """Apply a cleaning operation to a column.
+
+    Args:
+        df: DataFrame to modify (modified in-place and returned).
+        col: Column name.
+        op: One of ``"strip"``, ``"cast"``, or ``"fill_zero"``.
+
+    Returns:
+        (modified_df, rows_affected)
+    """
+    rows_affected = 0
+
+    if op == "strip":
+        before = df[col].copy()
+        df[col] = df[col].apply(
+            lambda x: str(x).strip() if pd.notna(x) else x
+        )
+        rows_affected = int((before != df[col]).sum())
+
+    elif op == "cast":
+        # Handle "$50.50" → 50.50 style strings
+        df[col] = df[col].apply(
+            lambda x: str(x).replace("$", "").replace(",", "").strip()
+            if pd.notna(x) else x
+        )
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        rows_affected = int(df[col].notna().sum())
+
+    elif op == "fill_zero":
+        null_before = int(df[col].isnull().sum())
+        df[col] = df[col].fillna(0)
+        rows_affected = null_before
+
+    return df, rows_affected
+
+
+def deduplicate_rows(
+    df: pd.DataFrame, key: str
+) -> Tuple[pd.DataFrame, int]:
+    """Remove duplicate rows from a DataFrame.
+
+    Args:
+        df: DataFrame to deduplicate.
+        key: Column to use as the uniqueness key.
+
+    Returns:
+        (deduped_df, dupes_removed)
+    """
+    before_len = len(df)
+    if key in df.columns:
+        df = df.drop_duplicates(subset=[key], keep="last")
+    else:
+        df = df.drop_duplicates(keep="last")
+    dupes_removed = before_len - len(df)
+    return df, dupes_removed
+
+
+def quarantine_rows(
+    df: pd.DataFrame, condition: str
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Split a DataFrame into kept and quarantined rows.
+
+    Args:
+        df: DataFrame to filter.
+        condition: SQL-like condition (e.g. "user_id IS NULL").
+
+    Returns:
+        (kept_df, quarantined_df)
+    """
+    quarantined = pd.DataFrame()
+    kept = df.copy()
+
+    if "IS NULL" in condition.upper() and "IS NOT NULL" not in condition.upper():
+        col_name = condition.upper().replace("IS NULL", "").strip()
+        for c in df.columns:
+            if c.upper() == col_name:
+                col_name = c
+                break
+        if col_name in df.columns:
+            mask = df[col_name].isnull()
+            quarantined = df[mask]
+            kept = df[~mask]
+
+    elif "IS NOT NULL" in condition.upper():
+        col_name = condition.upper().replace("IS NOT NULL", "").strip()
+        for c in df.columns:
+            if c.upper() == col_name:
+                col_name = c
+                break
+        if col_name in df.columns:
+            mask = df[col_name].notna()
+            quarantined = df[mask]
+            kept = df[~mask]
+
+    return kept, quarantined
+
+
+def merge_into_silver(
+    silver: pd.DataFrame,
+    daily: pd.DataFrame,
+    key: str = "user_id",
+) -> pd.DataFrame:
+    """Upsert daily batch into cumulative Silver.
+
+    - New keys → appended.
+    - Existing keys → updated (SCD-1 overwrite).
+
+    Args:
+        silver: Current cumulative Silver DataFrame.
+        daily: Today's cleaned/merged batch.
+        key: Column used for key-based upsert.
+
+    Returns:
+        Updated Silver DataFrame.
+    """
+    # Align schemas
+    for col in silver.columns:
+        if col not in daily.columns:
+            daily[col] = np.nan
+    for col in daily.columns:
+        if not silver.empty and col not in silver.columns:
+            silver[col] = np.nan
+
+    if silver.empty:
+        return daily.copy()
+
+    if key not in daily.columns or key not in silver.columns:
+        return pd.concat([silver, daily], ignore_index=True)
+
+    # Upsert: update existing, append new
+    existing_keys = set(silver[key].dropna())
+    new_mask = ~daily[key].isin(existing_keys) | daily[key].isna()
+    new_rows = daily[new_mask]
+    update_rows = daily[~new_mask]
+
+    if not update_rows.empty:
+        silver = silver.set_index(key)
+        silver.update(update_rows.set_index(key))
+        silver = silver.reset_index()
+
+    if not new_rows.empty:
+        silver = pd.concat([silver, new_rows], ignore_index=True)
+
+    return silver
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Legacy Phase-1 Operators (backward compat)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+_STALE_THRESHOLD_HOURS = 6.0
+_EXPLOSION_MULTIPLIER = 1.05  # > 5% extra rows triggers explosion alert
+
 
 def sync_check(
     bronze_a: pd.DataFrame,
     bronze_b: pd.DataFrame,
     time_delta_a: float,
     time_delta_b: float,
-    stale_threshold_hours: float = 6.0,
+    stale_threshold_hours: float = _STALE_THRESHOLD_HOURS,
 ) -> OpResult:
     """Inspect freshness of both sources.
 
@@ -38,20 +221,14 @@ def sync_check(
     """
     is_stale_a = time_delta_a > stale_threshold_hours
     is_stale_b = time_delta_b > stale_threshold_hours
-    metrics: Metrics = {
+    metrics = {
         "time_delta_a": time_delta_a,
         "time_delta_b": time_delta_b,
         "is_stale_a": is_stale_a,
         "is_stale_b": is_stale_b,
-        "rows_a": len(bronze_a),
-        "rows_b": len(bronze_b),
     }
     return None, metrics
 
-
-# ---------------------------------------------------------------------------
-# Operator: evolve_schema
-# ---------------------------------------------------------------------------
 
 def evolve_schema(
     silver: pd.DataFrame,
@@ -64,25 +241,17 @@ def evolve_schema(
 
     Fills missing historical rows with NaN.
     """
-    added: list[str] = []
-    result = silver.copy()
+    new_count = 0
+    for col in new_cols_a:
+        if col in bronze_a.columns and col not in silver.columns:
+            silver[col] = np.nan
+            new_count += 1
+    for col in new_cols_b:
+        if col in bronze_b.columns and col not in silver.columns:
+            silver[col] = np.nan
+            new_count += 1
+    return silver, {"new_cols_count": new_count}
 
-    for col in new_cols_a + new_cols_b:
-        if col not in result.columns:
-            result[col] = pd.NA
-            added.append(col)
-
-    metrics: Metrics = {
-        "cols_added": added,
-        "new_cols_count": len(added),
-        "silver_col_count": len(result.columns),
-    }
-    return result, metrics
-
-
-# ---------------------------------------------------------------------------
-# Operator: prep_keys
-# ---------------------------------------------------------------------------
 
 def prep_keys(df: pd.DataFrame, key_col: str) -> OpResult:
     """Cast, strip whitespace, and null-fill the join key column.
@@ -91,58 +260,34 @@ def prep_keys(df: pd.DataFrame, key_col: str) -> OpResult:
     affected.
     """
     result = df.copy()
-    original_nulls = result[key_col].isna().sum()
-    original_len = len(result)
+    null_before = float(result[key_col].isna().mean())
+    n_rows = len(result)
 
-    # Strip whitespace (treat blank strings as nulls)
-    result[key_col] = result[key_col].astype(str).str.strip()
-    result[key_col] = result[key_col].replace({"None": pd.NA, "nan": pd.NA, "": pd.NA})
+    # 1. Cast to str
+    result[key_col] = result[key_col].astype(str)
+    # 2. Strip whitespace
+    result[key_col] = result[key_col].str.strip()
+    # 3. Replace "None" / "nan" → actual NaN
+    result[key_col] = result[key_col].replace({"None": np.nan, "nan": np.nan})
+    null_after = float(result[key_col].isna().mean())
 
-    # Cast to string (uniform type for join)
-    result[key_col] = result[key_col].astype("string")
-
-    after_nulls = result[key_col].isna().sum()
-    null_ratio_before = original_nulls / max(original_len, 1)
-    null_ratio_after = int(after_nulls) / max(original_len, 1)
-
-    metrics: Metrics = {
-        "null_ratio_before": null_ratio_before,
-        "null_ratio_after": null_ratio_after,
-        "rows_trimmed": original_len - int(after_nulls),
-        "null_rows_dropped": 0,  # We do NOT drop nulls; grader catches orphans
+    metrics = {
+        "null_ratio_before": null_before,
+        "null_ratio_after": null_after,
+        "uniqueness": float(result[key_col].nunique() / max(n_rows, 1)),
+        "rows_processed": n_rows,
     }
     return result, metrics
 
-
-# ---------------------------------------------------------------------------
-# Operator: deduplicate
-# ---------------------------------------------------------------------------
 
 def deduplicate(df: pd.DataFrame, key_col: str) -> OpResult:
     """Ensure Dimension (Source B) is unique on ``key_col``.
 
     Keeps the last occurrence so the most-recent record wins.
     """
-    original_len = len(df)
-    result = df.drop_duplicates(subset=[key_col], keep="last").reset_index(drop=True)
-    dupes_removed = original_len - len(result)
-
-    non_null = result[key_col].notna().sum()
-    uniqueness = non_null / max(len(result), 1)
-
-    metrics: Metrics = {
-        "dupes_removed": dupes_removed,
-        "uniqueness": float(uniqueness),
-        "rows_after": len(result),
-    }
-    return result, metrics
-
-
-# ---------------------------------------------------------------------------
-# Operator: execute_join
-# ---------------------------------------------------------------------------
-
-_EXPLOSION_MULTIPLIER = 1.05  # > 5% extra rows triggers explosion alert
+    before = len(df)
+    result = df.drop_duplicates(subset=[key_col], keep="last")
+    return result, {"dupes_removed": before - len(result)}
 
 
 def execute_join(
@@ -150,64 +295,54 @@ def execute_join(
     dim: pd.DataFrame,
     key_col: str,
     join_type: str,  # "inner" | "left" | "anti"
-) -> Tuple[pd.DataFrame, pd.DataFrame, Metrics]:
+) -> tuple[pd.DataFrame, pd.DataFrame, Metrics]:
     """Join Fact (A) with Dimension (B).
 
     Returns (joined_df, quarantine_df, metrics).
     ``quarantine_df`` contains rows from A that did not match B (orphans).
     """
-    # Drop null-keyed rows from both before joining
-    fact_clean = fact.dropna(subset=[key_col])
-    dim_clean = dim.dropna(subset=[key_col])
-
-    # Compute match rate before join
-    fact_keys = set(fact_clean[key_col].astype(str))
-    dim_keys = set(dim_clean[key_col].astype(str))
-    overlap = fact_keys & dim_keys
-    match_rate = len(overlap) / max(len(fact_keys), 1)
+    fact_rows = len(fact)
 
     if join_type == "anti":
-        # Anti-join: rows in A NOT in B → goes to quarantine
-        mask = ~fact_clean[key_col].astype(str).isin(dim_keys)
-        joined = pd.DataFrame(columns=list(fact_clean.columns) + [
-            c for c in dim_clean.columns if c != key_col
-        ])
-        quarantine = fact_clean[mask].copy()
-    elif join_type == "inner":
-        merged = fact_clean.merge(dim_clean, on=key_col, how="inner",
-                                   suffixes=("_a", "_b"))
-        quarantine = fact_clean[~fact_clean[key_col].astype(str).isin(dim_keys)].copy()
-        joined = merged
-    else:  # left
-        merged = fact_clean.merge(dim_clean, on=key_col, how="left",
-                                   suffixes=("_a", "_b"))
-        # Quarantine = rows where all dim columns are NaN (no match)
-        dim_cols = [c for c in dim_clean.columns if c != key_col]
-        if dim_cols:
-            no_match_mask = merged[dim_cols[0]].isna() if dim_cols else pd.Series(False, index=merged.index)
-        else:
-            no_match_mask = pd.Series(False, index=merged.index)
-        quarantine = merged[no_match_mask][[key_col]].copy()
-        joined = merged
+        merged = fact.merge(dim[[key_col]], on=key_col, how="left", indicator=True)
+        quarantine = merged[merged["_merge"] == "left_only"].drop(columns=["_merge"])
+        joined = pd.DataFrame()
+        metrics: Metrics = {
+            "join_type": "anti",
+            "fact_rows": fact_rows,
+            "join_rows": 0,
+            "quarantine_rows": len(quarantine),
+            "match_rate": 0.0,
+            "explosion_detected": False,
+        }
+        return joined, quarantine, metrics
 
-    # Explosion detection
-    explosion = len(joined) > len(fact_clean) * _EXPLOSION_MULTIPLIER
+    how = join_type
+    joined = fact.merge(dim, on=key_col, how=how)
+    join_rows = len(joined)
 
-    metrics: Metrics = {
+    explosion = join_rows > fact_rows * _EXPLOSION_MULTIPLIER
+
+    quarantine = pd.DataFrame()
+    if how == "left":
+        dim_keys = set(dim[key_col].dropna())
+        orphan_mask = ~fact[key_col].isin(dim_keys) & fact[key_col].notna()
+        quarantine = fact[orphan_mask]
+
+    match_keys = set(fact[key_col].dropna()) & set(dim[key_col].dropna())
+    match_rate = len(match_keys) / max(len(fact[key_col].dropna()), 1)
+
+    metrics = {
         "join_type": join_type,
-        "fact_rows": len(fact_clean),
-        "dim_rows": len(dim_clean),
-        "join_rows": len(joined),
+        "fact_rows": fact_rows,
+        "join_rows": join_rows,
         "quarantine_rows": len(quarantine),
-        "match_rate": match_rate,
+        "match_rate": round(match_rate, 4),
         "explosion_detected": explosion,
     }
+
     return joined, quarantine, metrics
 
-
-# ---------------------------------------------------------------------------
-# Operator: apply_scd
-# ---------------------------------------------------------------------------
 
 def apply_scd(
     silver: pd.DataFrame,
@@ -222,94 +357,78 @@ def apply_scd(
     SCD-2: close old records (valid_to = now) and insert new ones with
            a new valid_from / valid_to = None (open record).
     """
-    now = datetime.datetime.now(datetime.UTC)
+    now = pd.Timestamp.now()
     inserts = 0
     updates = 0
 
-    if joined.empty:
-        metrics: Metrics = {
-            "scd_type": scd_type,
-            "inserts": 0,
-            "updates": 0,
-            "silver_rows": len(silver),
-        }
-        return silver, metrics
+    if scd_type == 1:
+        if silver.empty:
+            result = joined.copy()
+            inserts = len(result)
+        else:
+            result = silver.copy()
+            for _, row in joined.iterrows():
+                key_val = row[key_col]
+                mask = result[key_col] == key_val
+                if mask.any():
+                    for col in joined.columns:
+                        if col != key_col:
+                            result.loc[mask, col] = row[col]
+                    updates += 1
+                else:
+                    result = pd.concat(
+                        [result, pd.DataFrame([row])], ignore_index=True
+                    )
+                    inserts += 1
+        return result, {"scd_type": 1, "inserts": inserts, "updates": updates}
 
+    # SCD-2
     if silver.empty:
-        # First load — treat everything as inserts
         result = joined.copy()
-        if scd_type == 2:
+        result["valid_from"] = now
+        result["valid_to"] = pd.NaT
+        result["is_current"] = True
+        inserts = len(result)
+    else:
+        result = silver.copy()
+        if "valid_from" not in result.columns:
             result["valid_from"] = now
             result["valid_to"] = pd.NaT
             result["is_current"] = True
-        inserts = len(result)
-        metrics = {
-            "scd_type": scd_type,
-            "inserts": inserts,
-            "updates": 0,
-            "silver_rows": len(result),
-        }
-        return result, metrics
 
-    if scd_type == 1:
-        # Upsert: overwrite matching records
-        exists_mask = silver[key_col].isin(joined[key_col])
-        new_keys_mask = ~joined[key_col].isin(silver[key_col])
-
-        result = silver[~exists_mask].copy()
-        result = pd.concat([result, joined], ignore_index=True)
-
-        updates = int(exists_mask.sum())
-        inserts = int(new_keys_mask.sum())
-
-    else:  # SCD-2
-        # Ensure Silver has timestamp columns
-        if "valid_from" not in silver.columns:
-            silver = silver.copy()
-            silver["valid_from"] = now - datetime.timedelta(days=30)
-            silver["valid_to"] = pd.NaT
-            silver["is_current"] = True
-
-        silver_result = silver.copy()
-        new_rows: list[pd.DataFrame] = []
-
-        for _, new_row in joined.iterrows():
-            key_val = new_row[key_col]
-            current_mask = (silver_result[key_col] == key_val) & (silver_result["is_current"] == True)  # noqa: E712
-            current_rows = silver_result[current_mask]
-
-            if current_rows.empty:
-                # New record
-                row_df = pd.DataFrame([new_row])
-                row_df["valid_from"] = now
-                row_df["valid_to"] = pd.NaT
-                row_df["is_current"] = True
-                new_rows.append(row_df)
-                inserts += 1
-            else:
-                # Check if tracked column changed
-                old_val = current_rows.iloc[0].get(tracked_col)
-                new_val = new_row.get(tracked_col)
-                if old_val != new_val:
-                    # Close old record
-                    silver_result.loc[current_mask, "valid_to"] = now
-                    silver_result.loc[current_mask, "is_current"] = False
-                    # Insert new record
-                    row_df = pd.DataFrame([new_row])
-                    row_df["valid_from"] = now
-                    row_df["valid_to"] = pd.NaT
-                    row_df["is_current"] = True
-                    new_rows.append(row_df)
+        new_rows = []
+        for _, row in joined.iterrows():
+            key_val = row[key_col]
+            current_mask = (result[key_col] == key_val) & (
+                result.get("is_current", pd.Series(True, index=result.index))
+                == True  # noqa: E712
+            )
+            if current_mask.any():
+                old_tracked = result.loc[current_mask, tracked_col].iloc[0]
+                if old_tracked != row.get(tracked_col):
+                    result.loc[current_mask, "valid_to"] = now
+                    result.loc[current_mask, "is_current"] = False
+                    new_rec = row.to_dict()
+                    new_rec["valid_from"] = now
+                    new_rec["valid_to"] = pd.NaT
+                    new_rec["is_current"] = True
+                    new_rows.append(new_rec)
                     updates += 1
+                else:
+                    for col in joined.columns:
+                        if col not in (key_col, tracked_col):
+                            result.loc[current_mask, col] = row[col]
+            else:
+                new_rec = row.to_dict()
+                new_rec["valid_from"] = now
+                new_rec["valid_to"] = pd.NaT
+                new_rec["is_current"] = True
+                new_rows.append(new_rec)
+                inserts += 1
 
         if new_rows:
-            silver_result = pd.concat([silver_result] + new_rows, ignore_index=True)
-        result = silver_result
+            result = pd.concat(
+                [result, pd.DataFrame(new_rows)], ignore_index=True
+            )
 
-    metrics = {
-        "scd_type": scd_type,
-        "inserts": inserts,
-        "updates": updates,
-        "silver_rows": len(result),
-    }
-    return result, metrics
+    return result, {"scd_type": 2, "inserts": inserts, "updates": updates}

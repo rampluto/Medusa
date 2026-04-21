@@ -8,17 +8,9 @@ Example:
     ...     result = client.reset(seed=0)
     ...     print(result.observation.message)
     ...
-    ...     from envs.medusa_env.models import MedusaActionType
-    ...     result = client.step(MedusaAction(action=MedusaActionType.SYNC_CHECK))
+    ...     from medusa_env.models import MedusaActionType
+    ...     result = client.step(MedusaAction(action=MedusaActionType.PROFILE_TABLE))
     ...     print(f"Reward: {result.reward}")
-
-Example with Docker:
-    >>> client = medusa_env.from_docker_image("medusa_env:latest")
-    >>> try:
-    ...     result = client.reset()
-    ...     result = client.step(MedusaAction(action=MedusaActionType.COMMIT))
-    ... finally:
-    ...     client.close()
 """
 
 from typing import Any, Dict
@@ -43,26 +35,26 @@ class medusa_env(EnvClient[MedusaAction, MedusaObservation, MedusaState]):
     Each client instance has its own dedicated environment session.
 
     The agent observes a 16-float data quality feature vector and chooses
-    from 11 discrete ETL actions to build a correct Silver entity from
-    two Bronze sources (Fact + Dimension).
+    from 7 discrete ETL actions (v4.0) to build a correct Silver entity
+    across a 30-day gauntlet.
 
     Example:
         >>> with medusa_env(base_url="http://localhost:8000") as env:
-        ...     result = env.reset(seed=0)          # clean scenario
-        ...     result = env.step(MedusaAction(action=MedusaActionType.SYNC_CHECK))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.PREP_KEYS_A))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.PREP_KEYS_B))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.DEDUPLICATE_B))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.EXECUTE_JOIN_LEFT))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.APPLY_SCD_2))
-        ...     result = env.step(MedusaAction(action=MedusaActionType.COMMIT))
+        ...     result = env.reset(seed=0)
+        ...     result = env.step(MedusaAction(action="<action>PROFILE_TABLE</action>"))
+        ...     result = env.step(MedusaAction(action="<action>CLEAN_COLUMN</action>"))
+        ...     result = env.step(MedusaAction(action="<action>EXECUTE_MERGE</action>"))
+        ...     result = env.step(MedusaAction(action="<action>COMMIT_DAY</action>"))
         ...     print(result.reward)
     """
 
     def _step_payload(self, action: MedusaAction) -> Dict[str, Any]:
         """Convert MedusaAction to JSON payload for the step request."""
+        act_val = action.action
+        if hasattr(act_val, 'value'):
+            act_val = act_val.value
         return {
-            "action": action.action.value,
+            "action": act_val,
             "params": action.params,
         }
 
@@ -91,6 +83,11 @@ class medusa_env(EnvClient[MedusaAction, MedusaObservation, MedusaState]):
             scenario_id=payload.get("scenario_id"),
             step_idx=payload.get("step_idx", 0),
             stage=payload.get("stage", "init"),
+            # v4.0 30-day gauntlet
+            current_day=payload.get("current_day", 1),
+            step_count=payload.get("step_count", 0),
+            retry_count=payload.get("retry_count", 0),
+            did_dedup_today=payload.get("did_dedup_today", False),
             # Freshness
             time_delta_a=payload.get("time_delta_a", 0.0),
             time_delta_b=payload.get("time_delta_b", 0.0),
@@ -116,11 +113,17 @@ class medusa_env(EnvClient[MedusaAction, MedusaObservation, MedusaState]):
             scd_type=payload.get("scd_type"),
             scd_inserts=payload.get("scd_inserts", 0),
             scd_updates=payload.get("scd_updates", 0),
+            # Schema
+            did_evolve_schema=payload.get("did_evolve_schema", False),
             # Silver / Quarantine
             silver_row_count=payload.get("silver_row_count", 0),
             quarantine_row_count=payload.get("quarantine_row_count", 0),
+            source_row_count=payload.get("source_row_count", 0),
             source_a_row_count=payload.get("source_a_row_count", 0),
+            total_raw_rows=payload.get("total_raw_rows", 0),
+            total_quarantine_rows=payload.get("total_quarantine_rows", 0),
             # Grader
+            current_contract_columns=payload.get("current_contract_columns", []),
             grader_passed=payload.get("grader_passed", False),
             grader_report=payload.get("grader_report", ""),
             cumulative_reward=payload.get("cumulative_reward", 0.0),
