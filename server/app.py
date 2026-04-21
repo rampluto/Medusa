@@ -15,7 +15,19 @@ from __future__ import annotations
 #   2. Standalone installed (uv run server): medusa_env.* package
 #   3. Direct execution inside env dir: bare module names
 from openenv.core.env_server.http_server import create_app
-from medusa_env import MedusaEnv, MedusaAction, MedusaObservation
+try:
+    from ..models import MedusaAction, MedusaObservation
+    from .custom_api import register_custom_routes
+    from .medusa_env import MedusaEnv
+except ImportError:
+    try:
+        from medusa_env.models import MedusaAction, MedusaObservation
+        from medusa_env.server.custom_api import register_custom_routes
+        from medusa_env.server.medusa_env import MedusaEnv
+    except ImportError:
+        from models import MedusaAction, MedusaObservation
+        from server.custom_api import register_custom_routes
+        from server.medusa_env import MedusaEnv
 
 app = create_app(
     MedusaEnv,
@@ -23,6 +35,7 @@ app = create_app(
     MedusaObservation,
     env_name="medusa_env",
 )
+register_custom_routes(app)
 
 
 def main() -> None:

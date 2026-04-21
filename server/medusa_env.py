@@ -30,9 +30,9 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 try:
-    from grader import Grader
-    from models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
-    from operators import (
+    from ..grader import Grader
+    from ..models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+    from ..operators import (
         apply_scd,
         deduplicate,
         evolve_schema,
@@ -40,9 +40,9 @@ try:
         prep_keys,
         sync_check,
     )
-    from rewards import RewardEngine
-    from scenarios import DayDataGenerator, DayBatch, Scenario, ScenarioGenerator
-    from tasks import TASKS, score_episode
+    from ..rewards import RewardEngine
+    from ..scenarios import Scenario, ScenarioGenerator
+    from ..tasks import TASKS, score_episode
 except ImportError:
     from medusa_env.grader import Grader
     from medusa_env.models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
