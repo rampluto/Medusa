@@ -283,6 +283,7 @@ class DayDataGenerator:
     BASE_COLUMNS = ["user_id", "customer_name", "product_name",
                     "category", "revenue", "discount_amount",
                     "quantity", "price", "order_date", "region"]
+    PRIMARY_KEY = "user_id"
 
     def __init__(self, episode_seed: int, n_rows: int = 100):
         self.episode_seed = episode_seed
@@ -439,6 +440,95 @@ class DayDataGenerator:
         # Check for duplicate keys
         if "user_id" in df.columns:
             if df["user_id"].duplicated().sum() > len(df) * 0.5:
+                return True
+
+        return False
+
+
+class OlistDayGenerator:
+    """Generates daily Bronze batches for the 30-day gauntlet using Olist dataset."""
+    
+    TRAP_DAYS: Dict[int, str] = {
+        8: "type_trap",
+        14: "oom_trap",
+        21: "schema_drift",
+        28: "null_nuke",
+    }
+    
+    BASE_COLUMNS = [
+        "customer_id", "order_id", "product_id", "seller_id", 
+        "price", "freight_value", "discount_amount", 
+        "customer_city", "customer_state", "order_date"
+    ]
+    PRIMARY_KEY = "customer_id"
+
+    def __init__(self, episode_seed: Optional[int] = None, n_rows: int = 100, data_dir: str = "data/olist", anomalies_file: str = "anomalies_map.json"):
+        import json
+        from pathlib import Path
+        base = Path(__file__).parent
+        self.data_dir = base / data_dir
+        self.anomalies_file = self.data_dir / anomalies_file
+        self.episode_seed = episode_seed
+        self.n_rows = n_rows
+        
+        with open(self.anomalies_file, "r") as f:
+            raw_map = json.load(f)
+            self._day_anomalies = {
+                int(k): [(col, op) for col, op in v]
+                for k, v in raw_map.items()
+            }
+
+    @property
+    def day_anomalies(self) -> Dict[int, List[Tuple[str, str]]]:
+        return dict(self._day_anomalies)
+
+    def generate_day(self, day: int) -> DayBatch:
+        csv_path = self.data_dir / f"day_{day:02d}.csv"
+        df = pd.read_csv(csv_path)
+        
+        anomalies = self._day_anomalies.get(day, [])
+        is_trap = day in self.TRAP_DAYS
+        trap_type = self.TRAP_DAYS.get(day)
+        
+        new_columns = []
+        if trap_type == "schema_drift":
+            new_columns = ["promo_code"]
+            
+        description = f"Day {day} (Olist)"
+        if is_trap:
+            description += f" — TRAP: {trap_type}"
+            
+        return DayBatch(
+            day=day,
+            raw_data=df,
+            anomalies=anomalies,
+            is_trap_day=is_trap,
+            trap_type=trap_type,
+            new_columns=new_columns,
+            description=description,
+        )
+
+    def verify_batch_has_anomaly(self, batch: DayBatch) -> bool:
+        df = batch.raw_data
+
+        if df.isnull().any().any():
+            return True
+
+        for col in df.select_dtypes(include=["object"]).columns:
+            if df[col].dropna().astype(str).str.contains(r"^\s|\s$").any():
+                return True
+
+        if "price" in df.columns:
+            try:
+                pd.to_numeric(df["price"], errors="raise")
+            except (ValueError, TypeError):
+                return True
+
+        if batch.new_columns:
+            return True
+
+        if "customer_id" in df.columns:
+            if df["customer_id"].duplicated().sum() > len(df) * 0.5:
                 return True
 
         return False

@@ -157,6 +157,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         stale_threshold_hours: float = 6.0,
         n_fact_rows: int = 200,
         n_dim_rows: int = 150,
+        day_generator: Any = None,
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
@@ -174,12 +175,17 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         self._state = MedusaState()
         self._tables = _EpisodeTables()
         self._scenario: Optional[Scenario] = None
-        self._day_gen: Optional[DayDataGenerator] = None
+        self._day_gen_instance = day_generator
+        self._day_gen: Optional[Any] = None
         self._current_batch: Optional[DayBatch] = None
+        self._primary_key = getattr(self._day_gen_instance, "PRIMARY_KEY", "user_id") if self._day_gen_instance else "user_id"
 
     def _generate_day_anomalies(self, seed: int) -> Dict[int, List[tuple]]:
         """Generate the deterministic anomaly checklist for all 30 days."""
-        gen = DayDataGenerator(episode_seed=seed, n_rows=self._n_rows)
+        if self._day_gen_instance is not None:
+            gen = self._day_gen_instance
+        else:
+            gen = DayDataGenerator(episode_seed=seed, n_rows=self._n_rows)
         self._day_gen = gen
         return gen.day_anomalies
 
@@ -226,7 +232,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         lines = []
         lines.append(f"=== Data Contract ===")
         lines.append(f"  Columns: {self._state.current_contract_columns}")
-        lines.append(f"  Primary Key: user_id")
+        lines.append(f"  Primary Key: {self._primary_key}")
         lines.append(f"  Current Day: {self._state.current_day}/30")
 
         if self._current_batch is not None:
@@ -289,8 +295,9 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         day_anomalies = self._generate_day_anomalies(effective_seed)
 
         # Initialize schema contract from v4.0 daily batch base columns
-        # (the DayDataGenerator defines the canonical column set)
-        contract_cols = list(DayDataGenerator.BASE_COLUMNS)
+        # (the generator defines the canonical column set)
+        generator_class = self._day_gen.__class__ if self._day_gen else DayDataGenerator
+        contract_cols = list(generator_class.BASE_COLUMNS)
 
         self._state = MedusaState(
             run_id=run_id,
@@ -545,10 +552,10 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             }
 
         # Update state with key health info
-        if "user_id" in df.columns:
-            self._state.null_ratio_key_a = float(df["user_id"].isnull().mean())
-            self._state.uniqueness_a = float(
-                df["user_id"].nunique() / max(len(df), 1)
+        if self._primary_key in df.columns:
+            self._state.null_ratio_key_a = float(df[self._primary_key].isnull().mean())
+            self._state.uniqueness_b = (
+                df[self._primary_key].nunique() / max(len(df), 1)
             )
 
         profile_str = "\n".join(
@@ -624,7 +631,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         self, args: dict, base_reward: float
     ) -> Tuple[float, str, dict, bool]:
         """DEDUPLICATE: Removes duplicate rows from the daily batch."""
-        key = args.get("key", "user_id")
+        key = args.get("key", self._primary_key)
         reward = base_reward
 
         if self._state.did_dedup_today:
@@ -763,8 +770,8 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
 
         # Estimate output size
         raw_len = len(df)
-        if "user_id" in df.columns:
-            unique_keys = max(df["user_id"].nunique(), 1)
+        if self._primary_key in df.columns:
+            unique_keys = max(df[self._primary_key].nunique(), 1)
             dup_ratio = 1.0 - (unique_keys / max(raw_len, 1))
         else:
             unique_keys = raw_len
@@ -793,22 +800,23 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             if not silver.empty and col not in silver.columns:
                 silver[col] = np.nan
 
-        # Key-based upsert merge on user_id (not simple append)
+        # Key-based upsert merge on primary_key (not simple append)
+        silver = self._tables.silver
         silver_before_len = len(silver)
+
         if silver.empty:
-            # First merge: just set Silver to the daily batch
             self._tables.silver = df.copy()
-        elif "user_id" in df.columns and "user_id" in silver.columns:
-            # Upsert: update existing keys, append new keys
-            existing_keys = set(silver["user_id"].dropna())
-            new_mask = ~df["user_id"].isin(existing_keys) | df["user_id"].isna()
+        elif self._primary_key in df.columns and self._primary_key in silver.columns:
+            # We enforce exactly one row per primary_key in Silver
+            existing_keys = set(silver[self._primary_key].dropna())
+            new_mask = ~df[self._primary_key].isin(existing_keys) | df[self._primary_key].isna()
+            
             new_rows = df[new_mask]
             update_rows = df[~new_mask]
-
-            # Update existing rows (SCD-1 style overwrite)
+            
             if not update_rows.empty:
-                silver = silver.set_index("user_id")
-                update_rows_indexed = update_rows.set_index("user_id")
+                silver = silver.set_index(self._primary_key)
+                update_rows_indexed = update_rows.set_index(self._primary_key)
                 silver.update(update_rows_indexed)
                 silver = silver.reset_index()
 
@@ -818,7 +826,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
 
             self._tables.silver = silver
         else:
-            # Fallback: plain concat if no user_id column
+            # Fallback: plain concat if no primary_key column
             self._tables.silver = pd.concat([silver, df], ignore_index=True)
 
         self._state.silver_row_count = len(self._tables.silver)

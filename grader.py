@@ -95,24 +95,24 @@ class Grader:
             result.failures.append("SCHEMA_FAIL: Silver is empty.")
 
         # ── 3. Type Integrity (persistent) ───────────────────────────
-        if not silver.empty and "revenue" in silver.columns:
-            if silver["revenue"].dtype == np.float64:
+        if not silver.empty and "price" in silver.columns:
+            if silver["price"].dtype == np.float64:
                 result.type_integrity_ok = True
             else:
                 result.failures.append(
-                    f"TYPE_FAIL: revenue dtype is {silver['revenue'].dtype}, "
+                    f"TYPE_FAIL: price dtype is {silver['price'].dtype}, "
                     f"expected float64."
                 )
         else:
-            # No revenue column = not applicable, passes by default
+            # No price column = not applicable, passes by default
             result.type_integrity_ok = True
 
         # ── 4. Null Integrity (Day 28+) ──────────────────────────────
-        if current_day >= 28 and not silver.empty and "user_id" in silver.columns:
-            null_count = int(silver["user_id"].isnull().sum())
+        if current_day >= 28 and not silver.empty and "customer_id" in silver.columns:
+            null_count = int(silver["customer_id"].isnull().sum())
             if null_count > 0:
                 result.failures.append(
-                    f"NULL_FAIL: {null_count} NULL user_id rows in Silver "
+                    f"NULL_FAIL: {null_count} NULL customer_id rows in Silver "
                     f"(should be quarantined)."
                 )
             else:
