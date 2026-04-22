@@ -23,21 +23,13 @@ import pandas as pd
 from openenv.core.env_server.interfaces import Environment
 from openenv.core.env_server.types import EnvironmentMetadata
 
+import sys
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+
 try:
-    from medusa_env.grader import Grader
-    from medusa_env.models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
-    from medusa_env.operators import (
-        apply_scd,
-        deduplicate,
-        evolve_schema,
-        execute_join,
-        prep_keys,
-        sync_check,
-    )
-    from medusa_env.rewards import RewardEngine
-    from medusa_env.scenarios import DayDataGenerator, DayBatch, Scenario, ScenarioGenerator
-    from medusa_env.tasks import TASKS, score_episode
-except ImportError:
     from grader import Grader
     from models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
     from operators import (
@@ -51,6 +43,20 @@ except ImportError:
     from rewards import RewardEngine
     from scenarios import DayDataGenerator, DayBatch, Scenario, ScenarioGenerator
     from tasks import TASKS, score_episode
+except ImportError:
+    from medusa_env.grader import Grader
+    from medusa_env.models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+    from medusa_env.operators import (
+        apply_scd,
+        deduplicate,
+        evolve_schema,
+        execute_join,
+        prep_keys,
+        sync_check,
+    )
+    from medusa_env.rewards import RewardEngine
+    from medusa_env.scenarios import DayDataGenerator, DayBatch, Scenario, ScenarioGenerator
+    from medusa_env.tasks import TASKS, score_episode
 
 
 # ---------------------------------------------------------------------------
