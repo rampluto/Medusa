@@ -63,7 +63,7 @@ class MedusaState(State):
 
     # --- 30-Day Gauntlet State ---
     day_anomalies: Dict[int, List[tuple]] = Field(default_factory=dict)
-    cleaned_columns_today: set = Field(default_factory=set)
+    cleaned_columns_today: List[Tuple[str, str]] = Field(default_factory=list)
     profiled_tables_today: Dict[str, int] = Field(default_factory=dict)
     did_dedup_today: bool = False
 
