@@ -46,15 +46,16 @@ function renderTaskCards(tasks) {
 
   host.innerHTML = tasks
     .map(
-      (task) => `
+      (task, index) => `
         <article class="task-card ${currentState.taskId === task.id ? "task-card--active" : ""}">
+          <div class="task-card__index">${String(index + 1).padStart(2, "0")}</div>
           <div class="task-card__top">
             <span class="metric-badge ${shared.difficultyTone(task.difficulty)}">${task.difficulty}</span>
             <span class="tag">seed ${task.seed}</span>
           </div>
           <h3>${task.name}</h3>
-          <p>${task.description}</p>
-          <div class="stack">
+          <p class="task-card__description">${task.description}</p>
+          <div class="task-card__criteria">
             ${task.success_criteria.map((criterion) => `<span class="tag">${criterion}</span>`).join("")}
           </div>
           <div class="task-card__rubric">

@@ -105,6 +105,7 @@ class MedusaState(State):
     source_row_count: int = 0
     source_a_row_count: int = 0
     silver_row_count_at_day_start: int = 0  # For freshness check in _do_commit
+    did_merge_today: bool = False
     total_raw_rows: int = 0
     total_quarantine_rows: int = 0
     day28_quarantine_rows: int = 0

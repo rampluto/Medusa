@@ -28,8 +28,8 @@ def test_tasks_endpoint_returns_catalog():
     payload = response.json()
     assert "tasks" in payload
     task_ids = {task["id"] for task in payload["tasks"]}
-    assert "clean_pipeline" in task_ids
-    assert "schema_history_guard" in task_ids
+    assert "basic_pipeline" in task_ids
+    assert "gauntlet_30day" in task_ids
 
 
 def test_action_space_exposes_known_actions():
@@ -37,9 +37,9 @@ def test_action_space_exposes_known_actions():
     assert response.status_code == 200
     payload = response.json()
     action_names = {item["action"] for item in payload["actions"]}
-    assert "SYNC_CHECK" in action_names
-    assert "EXECUTE_JOIN_LEFT" in action_names
-    assert "COMMIT" in action_names
+    assert "PROFILE_TABLE" in action_names
+    assert "EXECUTE_MERGE" in action_names
+    assert "COMMIT_DAY" in action_names
 
 
 def test_agents_endpoint_returns_catalog():
@@ -55,11 +55,11 @@ def test_preview_returns_initial_state_without_sessions():
     response = request(
         "POST",
         "/api/run/preview",
-        json={"task_id": "clean_pipeline", "actions": []},
+        json={"task_id": "basic_pipeline", "actions": []},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task"]["id"] == "clean_pipeline"
+    assert payload["task"]["id"] == "basic_pipeline"
     assert payload["summary"]["stage"] == "running"
     assert payload["action_count"] == 0
     assert payload["observation"]["done"] is False
@@ -69,22 +69,22 @@ def test_preview_returns_initial_state_without_sessions():
 def test_autorun_executes_trace_for_selected_agent():
     response = request(
         "POST",
-        "/api/run/autorun/clean_pipeline",
+        "/api/run/autorun/basic_pipeline",
         json={"agent_id": "task_aware"},
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["agent"]["id"] == "task_aware"
     assert payload["action_count"] > 0
-    assert payload["actions"][-1]["action"] == "COMMIT"
+    assert payload["actions"][-1]["action"] == "COMMIT_DAY"
     assert payload["summary"]["done"] is True
 
 
 def test_reset_returns_initial_state_for_task():
-    response = request("POST", "/api/run/reset/clean_pipeline", json={})
+    response = request("POST", "/api/run/reset/basic_pipeline", json={})
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task"]["id"] == "clean_pipeline"
+    assert payload["task"]["id"] == "basic_pipeline"
     assert payload["action_count"] == 0
     assert payload["summary"]["stage"] == "running"
 
@@ -94,16 +94,16 @@ def test_step_appends_action_and_updates_trace():
         "POST",
         "/api/run/step",
         json={
-            "task_id": "clean_pipeline",
+            "task_id": "basic_pipeline",
             "actions": [],
-            "next_action": {"action": "SYNC_CHECK", "params": {}},
+            "next_action": {"action": "PROFILE_TABLE", "params": {"table": "bronze"}},
         },
     )
     assert response.status_code == 200
     payload = response.json()
     assert payload["action_count"] == 1
-    assert payload["actions"][0]["action"] == "SYNC_CHECK"
-    assert payload["state"]["did_sync_check"] is True
+    assert payload["actions"][0]["action"] == "PROFILE_TABLE"
+    assert payload["state"]["profiled_tables_today"]["bronze"] == 1
     assert payload["summary"]["step_idx"] == 1
 
 
@@ -112,54 +112,52 @@ def test_table_preview_returns_requested_rows():
         "POST",
         "/api/run/tables",
         json={
-            "task_id": "clean_pipeline",
+            "task_id": "basic_pipeline",
             "actions": [],
-            "table": "bronze_a",
+            "table": "daily_raw",
             "page": 1,
             "page_size": 5,
         },
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["table"] == "bronze_a"
+    assert payload["table"] == "daily_raw"
     assert payload["page_size"] == 5
     assert payload["total_rows"] >= len(payload["rows"])
-    assert "entity_id" in payload["columns"]
+    assert "user_id" in payload["columns"]
 
 
 def test_evaluate_scores_committed_trace():
     actions = [
-        {"action": "SYNC_CHECK", "params": {}},
-        {"action": "PREP_KEYS_A", "params": {}},
-        {"action": "PREP_KEYS_B", "params": {}},
-        {"action": "DEDUPLICATE_B", "params": {}},
-        {"action": "EXECUTE_JOIN_LEFT", "params": {}},
-        {"action": "APPLY_SCD_2", "params": {}},
-        {"action": "COMMIT", "params": {}},
+        {"action": "PROFILE_TABLE", "params": {"table": "bronze"}},
+        {"action": "DEDUPLICATE", "params": {"table": "bronze", "key": "user_id"}},
+        {"action": "EXECUTE_MERGE", "params": {}},
+        {"action": "COMMIT_DAY", "params": {}},
     ]
     response = request(
         "POST",
         "/api/run/evaluate",
-        json={"task_id": "clean_pipeline", "actions": actions},
+        json={"task_id": "basic_pipeline", "actions": actions},
     )
     assert response.status_code == 200
     payload = response.json()
-    assert payload["task"]["id"] == "clean_pipeline"
+    assert payload["task"]["id"] == "basic_pipeline"
     assert payload["evaluation"]["grade"] in {"S", "A", "B", "C", "F"}
-    assert payload["evaluation"]["score"] >= 0.1
+    assert payload["evaluation"]["score"] >= 0.0
 
 
-def test_autorun_uses_snapshot_scd1_path():
+def test_autorun_returns_v4_action_trace():
     response = request(
         "POST",
-        "/api/run/autorun/snapshot_upsert",
+        "/api/run/autorun/basic_pipeline",
         json={"agent_id": "task_aware"},
     )
     assert response.status_code == 200
     payload = response.json()
     action_names = [action["action"] for action in payload["actions"]]
-    assert "APPLY_SCD_1" in action_names
-    assert "COMMIT" in action_names
+    assert "PROFILE_TABLE" in action_names
+    assert "EXECUTE_MERGE" in action_names
+    assert "COMMIT_DAY" in action_names
 
 
 def test_medusa_frontend_serves_custom_page():

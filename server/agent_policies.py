@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import random
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Union
 
 try:
-    from ..models import MedusaActionType
+    from ..models import MedusaAction, MedusaActionType
     from ..tasks import Task
 except ImportError:
     try:
-        from medusa_env.models import MedusaActionType
+        from medusa_env.models import MedusaAction, MedusaActionType
         from medusa_env.tasks import Task
     except ImportError:
-        from models import MedusaActionType
+        from models import MedusaAction, MedusaActionType
         from tasks import Task
+
+
+PolicyAction = Union[MedusaAction, MedusaActionType]
 
 
 @dataclass(frozen=True)
@@ -44,7 +47,7 @@ class BaseAgentPolicy:
         task: Optional[Task],
         state: Any,
         observation: Any,
-    ) -> MedusaActionType:
+    ) -> PolicyAction:
         raise NotImplementedError
 
 
@@ -69,8 +72,13 @@ class RandomPolicy(BaseAgentPolicy):
         task: Optional[Task],
         state: Any,
         observation: Any,
-    ) -> MedusaActionType:
-        return self._random.choice(list(MedusaActionType))
+    ) -> PolicyAction:
+        candidates = [
+            MedusaAction(action=MedusaActionType.PROFILE_TABLE.value, params={"table": "bronze"}),
+            MedusaAction(action=MedusaActionType.EXECUTE_MERGE.value, params={}),
+            MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={}),
+        ]
+        return self._random.choice(candidates)
 
 
 class AlwaysCommitPolicy(BaseAgentPolicy):
@@ -90,8 +98,8 @@ class AlwaysCommitPolicy(BaseAgentPolicy):
         task: Optional[Task],
         state: Any,
         observation: Any,
-    ) -> MedusaActionType:
-        return MedusaActionType.COMMIT
+    ) -> PolicyAction:
+        return MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={})
 
 
 class GovernanceFirstPolicy(BaseAgentPolicy):
@@ -114,22 +122,8 @@ class GovernanceFirstPolicy(BaseAgentPolicy):
         task: Optional[Task],
         state: Any,
         observation: Any,
-    ) -> MedusaActionType:
-        if (state.is_stale_a or state.is_stale_b) and not state.did_sync_check:
-            return MedusaActionType.SYNC_CHECK
-        if (state.new_cols_a or state.new_cols_b) and not state.did_evolve_schema:
-            return MedusaActionType.EVOLVE_SCHEMA
-        if not state.did_prep_a:
-            return MedusaActionType.PREP_KEYS_A
-        if not state.did_prep_b:
-            return MedusaActionType.PREP_KEYS_B
-        if state.uniqueness_b < 1.0 and not state.did_dedup_b:
-            return MedusaActionType.DEDUPLICATE_B
-        if not state.did_join:
-            return MedusaActionType.EXECUTE_JOIN_LEFT
-        if not state.did_scd:
-            return MedusaActionType.APPLY_SCD_2
-        return MedusaActionType.COMMIT
+    ) -> PolicyAction:
+        return _next_v4_action(state)
 
 
 class TaskAwarePlannerPolicy(BaseAgentPolicy):
@@ -153,59 +147,50 @@ class TaskAwarePlannerPolicy(BaseAgentPolicy):
         task: Optional[Task],
         state: Any,
         observation: Any,
-    ) -> MedusaActionType:
-        task_id = task.id if task is not None else None
+    ) -> PolicyAction:
+        return _next_v4_action(state)
 
-        if self._needs_sync(task_id, state) and not state.did_sync_check:
-            return MedusaActionType.SYNC_CHECK
-        if self._needs_schema(task_id, state) and not state.did_evolve_schema:
-            return MedusaActionType.EVOLVE_SCHEMA
-        if not state.did_prep_a:
-            return MedusaActionType.PREP_KEYS_A
-        if not state.did_prep_b:
-            return MedusaActionType.PREP_KEYS_B
-        if self._needs_dedup(task_id, state) and not state.did_dedup_b:
-            return MedusaActionType.DEDUPLICATE_B
-        if not state.did_join:
-            return self._preferred_join(task_id)
-        if not state.did_scd:
-            return self._preferred_scd(task_id)
-        return MedusaActionType.COMMIT
 
-    @staticmethod
-    def _needs_sync(task_id: Optional[str], state: Any) -> bool:
-        return task_id in {
-            "full_medallion",
-            "stale_sync_recovery",
-            "stale_history_guard",
-        } or state.is_stale_a or state.is_stale_b
+def _next_v4_action(state: Any) -> MedusaAction:
+    current_day = getattr(state, "current_day", 1)
+    anomalies = list(getattr(state, "day_anomalies", {}).get(current_day, []))
 
-    @staticmethod
-    def _needs_schema(task_id: Optional[str], state: Any) -> bool:
-        return task_id in {
-            "schema_bootstrap",
-            "drift_alignment",
-            "schema_history_guard",
-            "full_medallion",
-        } or bool(state.new_cols_a or state.new_cols_b)
+    if not getattr(state, "profiled_tables_today", {}).get("bronze"):
+        return MedusaAction(action=MedusaActionType.PROFILE_TABLE.value, params={"table": "bronze"})
 
-    @staticmethod
-    def _needs_dedup(task_id: Optional[str], state: Any) -> bool:
-        return task_id in {
-            "dirty_integration",
-            "dedup_guardrail",
-            "full_medallion",
-        } or state.uniqueness_b < 1.0
+    for column, operation in anomalies:
+        if operation in {"strip", "cast", "fill_zero"}:
+            if (column, operation) not in getattr(state, "cleaned_columns_today", set()):
+                return MedusaAction(
+                    action=MedusaActionType.CLEAN_COLUMN.value,
+                    params={"table": "bronze", "col": column, "op": operation},
+                )
+        elif operation == "deduplicate" and not getattr(state, "did_dedup_today", False):
+            return MedusaAction(
+                action=MedusaActionType.DEDUPLICATE.value,
+                params={"table": "bronze", "key": column},
+            )
+        elif operation == "evolve" and column not in getattr(state, "current_contract_columns", []):
+            return MedusaAction(
+                action=MedusaActionType.EVOLVE_SILVER_SCHEMA.value,
+                params={"column": column},
+            )
+        elif operation == "quarantine" and getattr(state, "day28_quarantine_rows", 0) == 0:
+            return MedusaAction(
+                action=MedusaActionType.QUARANTINE_ROWS.value,
+                params={"table": "bronze", "condition": f"{column} IS NULL"},
+            )
 
-    @staticmethod
-    def _preferred_join(task_id: Optional[str]) -> MedusaActionType:
-        return MedusaActionType.EXECUTE_JOIN_LEFT
+    if getattr(state, "uniqueness_b", 1.0) < 1.0 and not getattr(state, "did_dedup_today", False):
+        return MedusaAction(
+            action=MedusaActionType.DEDUPLICATE.value,
+            params={"table": "bronze", "key": "user_id"},
+        )
 
-    @staticmethod
-    def _preferred_scd(task_id: Optional[str]) -> MedusaActionType:
-        if task_id == "snapshot_upsert":
-            return MedusaActionType.APPLY_SCD_1
-        return MedusaActionType.APPLY_SCD_2
+    if not getattr(state, "did_merge_today", False):
+        return MedusaAction(action=MedusaActionType.EXECUTE_MERGE.value, params={})
+
+    return MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={})
 
 
 AGENT_REGISTRY: Dict[str, Type[BaseAgentPolicy]] = {

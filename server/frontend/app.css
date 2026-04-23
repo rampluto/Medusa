@@ -865,3 +865,1097 @@ select:focus,
     min-width: 30rem;
   }
 }
+
+/* High-contrast dashboard treatment for the standalone catalog and audit pages. */
+body[data-page="catalog"],
+body[data-page="audit"] {
+  --page-bg: #09130f;
+  --page-panel: rgba(12, 27, 23, 0.82);
+  --page-panel-strong: rgba(16, 38, 32, 0.94);
+  --page-border: rgba(230, 211, 166, 0.18);
+  --page-border-strong: rgba(230, 211, 166, 0.34);
+  --text: #fff3dd;
+  --muted: #b9c8b9;
+  --line: rgba(255, 243, 221, 0.12);
+  --line-strong: rgba(255, 243, 221, 0.22);
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 16px 38px rgba(0, 0, 0, 0.28);
+  background:
+    radial-gradient(circle at 8% 4%, rgba(210, 166, 106, 0.28), transparent 24rem),
+    radial-gradient(circle at 78% 0%, rgba(15, 108, 104, 0.38), transparent 28rem),
+    radial-gradient(circle at 42% 42%, rgba(180, 80, 45, 0.22), transparent 24rem),
+    linear-gradient(180deg, #09130f 0%, #111914 52%, #090f0c 100%);
+}
+
+body[data-page="catalog"]::before,
+body[data-page="audit"]::before {
+  background-image:
+    linear-gradient(rgba(255, 243, 221, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 243, 221, 0.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, black, transparent 92%);
+}
+
+body[data-page="catalog"] .topbar,
+body[data-page="audit"] .topbar,
+body[data-page="catalog"] .hero,
+body[data-page="audit"] .hero,
+body[data-page="catalog"] .panel,
+body[data-page="audit"] .panel {
+  border: 1px solid var(--page-border);
+  background:
+    linear-gradient(145deg, rgba(255, 243, 221, 0.09), rgba(255, 243, 221, 0.025)),
+    var(--page-panel);
+  box-shadow: var(--shadow);
+}
+
+body[data-page="catalog"] .topbar,
+body[data-page="audit"] .topbar {
+  position: sticky;
+  top: 1rem;
+  z-index: 10;
+}
+
+body[data-page="catalog"] .topbar__brand,
+body[data-page="audit"] .topbar__brand,
+body[data-page="catalog"] .topbar__links a,
+body[data-page="audit"] .topbar__links a,
+body[data-page="catalog"] .status-pill,
+body[data-page="audit"] .status-pill,
+body[data-page="catalog"] .metric-badge,
+body[data-page="audit"] .metric-badge,
+body[data-page="catalog"] .tag,
+body[data-page="audit"] .tag {
+  color: var(--text);
+  border-color: var(--page-border);
+  background: rgba(255, 243, 221, 0.08);
+}
+
+body[data-page="catalog"] .topbar__links a.is-active,
+body[data-page="audit"] .topbar__links a.is-active,
+body[data-page="catalog"] .topbar__links a:hover,
+body[data-page="audit"] .topbar__links a:hover {
+  background: rgba(210, 166, 106, 0.18);
+  border-color: var(--page-border-strong);
+}
+
+body[data-page="catalog"] .hero,
+body[data-page="audit"] .hero {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0.75rem 1.15rem;
+  padding: clamp(1.25rem, 2.8vw, 2.4rem);
+  border-radius: 34px;
+}
+
+body[data-page="catalog"] .hero::after,
+body[data-page="audit"] .hero::after {
+  content: "";
+  position: absolute;
+  right: -6rem;
+  bottom: -8rem;
+  width: 24rem;
+  height: 24rem;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, rgba(210, 166, 106, 0.32), transparent 58%),
+    radial-gradient(circle, rgba(15, 108, 104, 0.36), transparent 64%);
+  filter: blur(2px);
+}
+
+body[data-page="catalog"] .hero__copy,
+body[data-page="audit"] .hero__copy,
+body[data-page="catalog"] .hero__aside,
+body[data-page="audit"] .hero__aside {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-page="catalog"] .hero h1,
+body[data-page="audit"] .hero h1 {
+  max-width: 13ch;
+  color: var(--text);
+  font-size: clamp(3rem, 6vw, 6.8rem);
+  letter-spacing: -0.055em;
+}
+
+body[data-page="catalog"] .hero__lede,
+body[data-page="audit"] .hero__lede,
+body[data-page="catalog"] .panel__header p,
+body[data-page="audit"] .panel__header p,
+body[data-page="catalog"] .story-card,
+body[data-page="audit"] .story-card,
+body[data-page="catalog"] .stack,
+body[data-page="audit"] .stack,
+body[data-page="catalog"] .task-card p,
+body[data-page="audit"] .task-card p {
+  color: var(--muted);
+}
+
+body[data-page="catalog"] .hero-card,
+body[data-page="audit"] .hero-card,
+body[data-page="catalog"] .metric,
+body[data-page="audit"] .metric,
+body[data-page="catalog"] .story-card,
+body[data-page="audit"] .story-card,
+body[data-page="catalog"] .audit-card,
+body[data-page="audit"] .audit-card,
+body[data-page="catalog"] .feature,
+body[data-page="audit"] .feature,
+body[data-page="catalog"] .task-card,
+body[data-page="audit"] .task-card {
+  color: var(--text);
+  border-color: var(--page-border);
+  background:
+    linear-gradient(155deg, rgba(255, 243, 221, 0.12), rgba(255, 243, 221, 0.035)),
+    rgba(255, 243, 221, 0.035);
+}
+
+body[data-page="catalog"] .button,
+body[data-page="audit"] .button {
+  border: 0;
+  background: linear-gradient(135deg, #f2ba69 0%, #d96d3d 48%, #0f8a83 100%);
+  color: #11140f;
+  box-shadow: 0 16px 30px rgba(217, 109, 61, 0.22);
+}
+
+body[data-page="catalog"] .button--ghost,
+body[data-page="audit"] .button--ghost {
+  color: var(--text);
+  border: 1px solid var(--page-border);
+  background: rgba(255, 243, 221, 0.075);
+  box-shadow: none;
+}
+
+body[data-page="catalog"] .workspace--catalog {
+  grid-template-areas:
+    "trace signals"
+    "tasks tasks";
+  grid-template-columns: minmax(18rem, 0.9fr) minmax(18rem, 1.1fr);
+  gap: 1.15rem;
+  align-items: stretch;
+}
+
+body[data-page="catalog"] .panel--catalog-current {
+  grid-area: trace;
+  grid-column: auto;
+}
+
+body[data-page="catalog"] .panel--catalog-signals {
+  grid-area: signals;
+  grid-column: auto;
+}
+
+body[data-page="catalog"] .panel--catalog-tasks {
+  grid-area: tasks;
+  grid-column: auto;
+  padding: clamp(1rem, 2vw, 1.45rem);
+  background:
+    radial-gradient(circle at 0% 0%, rgba(210, 166, 106, 0.16), transparent 22rem),
+    linear-gradient(145deg, rgba(255, 243, 221, 0.11), rgba(15, 108, 104, 0.08)),
+    var(--page-panel);
+}
+
+body[data-page="catalog"] .panel--catalog-current,
+body[data-page="catalog"] .panel--catalog-signals,
+body[data-page="audit"] .panel--audit-summary,
+body[data-page="audit"] .panel--audit-trace {
+  min-height: 100%;
+}
+
+body[data-page="catalog"] .summary-grid--stacked,
+body[data-page="audit"] .summary-grid--compact {
+  grid-template-columns: repeat(auto-fit, minmax(8.4rem, 1fr));
+  margin: 0;
+}
+
+body[data-page="catalog"] .task-cards {
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+  gap: 1rem;
+  margin-top: 1.15rem;
+}
+
+body[data-page="catalog"] .task-card {
+  position: relative;
+  overflow: hidden;
+  padding: 1.15rem;
+  min-height: 29rem;
+  align-content: start;
+  border-radius: 26px;
+  isolation: isolate;
+}
+
+body[data-page="catalog"] .task-card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0.45rem;
+  background: linear-gradient(90deg, #f2ba69, #d96d3d, #0f8a83);
+}
+
+body[data-page="catalog"] .task-card::after {
+  content: "";
+  position: absolute;
+  inset: auto -4rem -5rem auto;
+  width: 14rem;
+  height: 14rem;
+  border-radius: 999px;
+  background: rgba(15, 138, 131, 0.16);
+  z-index: -1;
+}
+
+body[data-page="catalog"] .task-card:hover {
+  transform: translateY(-7px);
+  border-color: var(--page-border-strong);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
+}
+
+body[data-page="catalog"] .task-card--active {
+  border-color: rgba(242, 186, 105, 0.7);
+  box-shadow:
+    0 0 0 1px rgba(242, 186, 105, 0.28) inset,
+    0 24px 70px rgba(242, 186, 105, 0.12);
+}
+
+.task-card__index,
+.feature__index {
+  color: rgba(255, 243, 221, 0.18);
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-weight: 800;
+  line-height: 0.85;
+  pointer-events: none;
+}
+
+.task-card__index {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  font-size: clamp(3.4rem, 7vw, 5.8rem);
+}
+
+body[data-page="catalog"] .task-card__top,
+body[data-page="catalog"] .task-card h3,
+body[data-page="catalog"] .task-card__description,
+body[data-page="catalog"] .task-card__criteria,
+body[data-page="catalog"] .task-card__rubric,
+body[data-page="catalog"] .task-card .action-row {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-page="catalog"] .task-card h3 {
+  max-width: 14ch;
+  font-size: clamp(1.55rem, 2vw, 2.2rem);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+}
+
+body[data-page="catalog"] .task-card__description {
+  min-height: 4.8rem;
+  line-height: 1.65;
+}
+
+body[data-page="catalog"] .task-card__criteria {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+body[data-page="catalog"] .task-card__criteria .tag {
+  border-radius: 12px;
+  background: rgba(15, 138, 131, 0.13);
+}
+
+body[data-page="catalog"] .task-card__rubric {
+  padding: 0.75rem;
+  border: 1px solid var(--page-border);
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.18);
+}
+
+body[data-page="catalog"] .task-card .rubric-row {
+  border-color: rgba(255, 243, 221, 0.1);
+  background: rgba(255, 243, 221, 0.045);
+}
+
+body[data-page="audit"] .workspace--audit {
+  grid-template-areas:
+    "summary summary summary summary summary summary summary summary summary summary summary summary"
+    "grader grader grader grader grader grader grader grader trace trace trace trace"
+    "rubric rubric rubric rubric rubric rubric rubric rubric rubric rubric rubric rubric"
+    "features features features features features features features features features features features features";
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 1.15rem;
+  align-items: stretch;
+}
+
+body[data-page="audit"] .panel--audit-summary {
+  grid-area: summary;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-page {
+  grid-area: grader;
+  grid-column: auto;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(210, 166, 106, 0.16), transparent 22rem),
+    linear-gradient(145deg, rgba(255, 243, 221, 0.11), rgba(15, 108, 104, 0.08)),
+    var(--page-panel);
+}
+
+body[data-page="audit"] .panel--audit-trace {
+  grid-area: trace;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-features {
+  grid-area: features;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-rubric {
+  grid-area: rubric;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .audit-dashboard-grid,
+body[data-page="audit"] .audit-report-grid,
+body[data-page="audit"] .audit-kpi-grid,
+body[data-page="audit"] .readiness-grid,
+body[data-page="audit"] .blocker-grid,
+body[data-page="audit"] .grader-line-grid,
+body[data-page="audit"] .rubric-matrix,
+body[data-page="audit"] .audit-trace-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+body[data-page="audit"] .audit-dashboard-grid {
+  grid-template-columns: minmax(16rem, 1.1fr) minmax(20rem, 1.4fr) minmax(16rem, 1fr);
+  align-items: stretch;
+}
+
+body[data-page="audit"] .audit-kpi-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+body[data-page="audit"] .readiness-grid,
+body[data-page="audit"] .blocker-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+body[data-page="audit"] .blocker-grid {
+  grid-column: 1 / -1;
+}
+
+body[data-page="audit"] .audit-score-tile,
+body[data-page="audit"] .readiness-tile,
+body[data-page="audit"] .blocker-tile,
+body[data-page="audit"] .grader-status-tile,
+body[data-page="audit"] .rubric-score-tile,
+body[data-page="audit"] .rubric-tile,
+body[data-page="audit"] .rubric-note,
+body[data-page="audit"] .trace-tile,
+body[data-page="audit"] .audit-action-list li,
+body[data-page="audit"] .metric--audit {
+  border: 1px solid var(--page-border);
+  border-radius: 8px;
+  background:
+    linear-gradient(155deg, rgba(255, 243, 221, 0.105), rgba(255, 243, 221, 0.035)),
+    rgba(255, 243, 221, 0.035);
+  box-shadow: inset 0 1px 0 rgba(255, 243, 221, 0.08);
+}
+
+body[data-page="audit"] .audit-score-tile,
+body[data-page="audit"] .grader-status-tile,
+body[data-page="audit"] .rubric-score-tile {
+  padding: 1rem;
+}
+
+body[data-page="audit"] .audit-score-tile {
+  display: grid;
+  align-content: space-between;
+  min-height: 100%;
+  background:
+    linear-gradient(135deg, rgba(242, 186, 105, 0.18), rgba(15, 138, 131, 0.12)),
+    rgba(255, 243, 221, 0.04);
+}
+
+body[data-page="audit"] .audit-score-tile strong {
+  display: block;
+  margin: 0.35rem 0 0.2rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: clamp(2.6rem, 6vw, 5.6rem);
+  line-height: 0.88;
+  color: var(--text);
+}
+
+body[data-page="audit"] .audit-score-tile p,
+body[data-page="audit"] .grader-status-tile p,
+body[data-page="audit"] .rubric-score-tile p {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+body[data-page="audit"] .metric--audit {
+  min-height: 6rem;
+  padding: 0.8rem;
+}
+
+body[data-page="audit"] .metric--audit .metric__value {
+  overflow-wrap: anywhere;
+}
+
+body[data-page="audit"] .readiness-tile,
+body[data-page="audit"] .blocker-tile,
+body[data-page="audit"] .rubric-tile,
+body[data-page="audit"] .rubric-note,
+body[data-page="audit"] .trace-tile {
+  padding: 0.8rem;
+  min-width: 0;
+}
+
+body[data-page="audit"] .readiness-tile span,
+body[data-page="audit"] .blocker-tile span,
+body[data-page="audit"] .rubric-tile span,
+body[data-page="audit"] .rubric-note span,
+body[data-page="audit"] .trace-tile span,
+body[data-page="audit"] .grader-status-tile span,
+body[data-page="audit"] .rubric-score-tile span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+body[data-page="audit"] .readiness-tile strong,
+body[data-page="audit"] .blocker-tile strong,
+body[data-page="audit"] .rubric-tile strong,
+body[data-page="audit"] .rubric-note strong,
+body[data-page="audit"] .trace-tile strong,
+body[data-page="audit"] .grader-status-tile strong,
+body[data-page="audit"] .rubric-score-tile strong {
+  display: block;
+  margin-top: 0.32rem;
+  color: var(--text);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+body[data-page="audit"] .blocker-tile--clear {
+  border-color: rgba(40, 116, 71, 0.42);
+  background: rgba(40, 116, 71, 0.13);
+}
+
+body[data-page="audit"] .audit-report-grid {
+  grid-template-columns: minmax(14rem, 0.9fr) minmax(20rem, 1.6fr);
+  align-items: start;
+}
+
+body[data-page="audit"] .grader-status-tile strong,
+body[data-page="audit"] .rubric-score-tile strong {
+  font-size: clamp(1.45rem, 2.5vw, 2.3rem);
+  line-height: 1;
+}
+
+body[data-page="audit"] .grader-line-grid {
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+}
+
+.audit-line {
+  min-height: 4.6rem;
+  padding: 0.75rem;
+  border: 1px solid var(--page-border);
+  border-radius: 8px;
+  background: rgba(255, 243, 221, 0.065);
+  color: var(--text);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+body[data-page="audit"] .rubric-matrix {
+  grid-template-columns: minmax(18rem, 1.15fr) repeat(auto-fit, minmax(14rem, 1fr));
+  align-items: stretch;
+}
+
+body[data-page="audit"] .rubric-score-tile {
+  grid-row: span 2;
+}
+
+body[data-page="audit"] .rubric-tile {
+  display: grid;
+  align-content: space-between;
+  min-height: 8.2rem;
+}
+
+body[data-page="audit"] .rubric-note {
+  grid-column: 1 / -1;
+}
+
+body[data-page="audit"] .audit-trace-grid {
+  grid-template-columns: 1fr;
+}
+
+body[data-page="audit"] .audit-action-list {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-page="audit"] .audit-action-list li {
+  display: grid;
+  grid-template-columns: 2.3rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.58rem 0.7rem;
+}
+
+body[data-page="audit"] .audit-action-list span {
+  color: rgba(255, 243, 221, 0.42);
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-weight: 800;
+}
+
+body[data-page="audit"] .audit-action-list strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+body[data-page="audit"] .feature-grid {
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 1rem;
+}
+
+body[data-page="audit"] .feature {
+  position: relative;
+  overflow: hidden;
+  min-height: 12.5rem;
+  padding: 1.05rem;
+  border-radius: 24px;
+}
+
+body[data-page="audit"] .feature::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0.36rem;
+  background: linear-gradient(90deg, #0f8a83, #f2ba69, #d96d3d);
+}
+
+body[data-page="audit"] .feature__index {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  font-size: 2.1rem;
+}
+
+body[data-page="audit"] .feature .metric__label,
+body[data-page="audit"] .feature .feature__value,
+body[data-page="audit"] .feature .feature__bar,
+body[data-page="audit"] .feature div:last-child {
+  position: relative;
+}
+
+body[data-page="audit"] .feature .metric__label {
+  padding-right: 2.3rem;
+}
+
+body[data-page="audit"] .feature__value {
+  font-size: 1.35rem;
+  color: var(--text);
+}
+
+body[data-page="audit"] .feature__bar {
+  background: rgba(255, 243, 221, 0.1);
+}
+
+body[data-page="audit"] .feature__bar span {
+  background: linear-gradient(90deg, #f2ba69, #0f8a83);
+}
+
+@media (max-width: 1180px) {
+  body[data-page="audit"] .workspace--audit {
+    grid-template-areas:
+      "summary summary"
+      "grader trace"
+      "rubric rubric"
+      "features features";
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  body[data-page="audit"] .audit-dashboard-grid,
+  body[data-page="audit"] .audit-report-grid,
+  body[data-page="audit"] .rubric-matrix {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="audit"] .rubric-score-tile {
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 900px) {
+  body[data-page="catalog"] .workspace--catalog,
+  body[data-page="audit"] .workspace--audit {
+    grid-template-areas:
+      "trace"
+      "signals"
+      "tasks";
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="audit"] .workspace--audit {
+    grid-template-areas:
+      "summary"
+      "grader"
+      "trace"
+      "rubric"
+      "features";
+  }
+
+  body[data-page="audit"] .audit-kpi-grid,
+  body[data-page="audit"] .readiness-grid,
+  body[data-page="audit"] .blocker-grid,
+  body[data-page="audit"] .grader-line-grid {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="catalog"] .task-card {
+    min-height: auto;
+  }
+}
+
+/* Stable audit report grid reset. Keep this last so the audit page stays predictable. */
+body[data-page="audit"] .hero--audit h1 {
+  max-width: 11ch;
+  letter-spacing: 0;
+}
+
+body[data-page="audit"] .workspace--audit {
+  display: grid;
+  grid-template-areas:
+    "summary summary"
+    "grader trace"
+    "rubric rubric"
+    "features features";
+  grid-template-columns: minmax(0, 1.55fr) minmax(20rem, 0.9fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+body[data-page="audit"] .panel--audit-summary {
+  grid-area: summary;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-page {
+  grid-area: grader;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-trace {
+  grid-area: trace;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-rubric {
+  grid-area: rubric;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel--audit-features {
+  grid-area: features;
+  grid-column: auto;
+}
+
+body[data-page="audit"] .panel__header {
+  align-items: start;
+}
+
+body[data-page="audit"] .panel__header h2,
+body[data-page="audit"] .panel__header p {
+  min-width: 0;
+}
+
+body[data-page="audit"] .audit-dashboard-grid,
+body[data-page="audit"] .audit-report-grid,
+body[data-page="audit"] .audit-metric-grid,
+body[data-page="audit"] .audit-blocker-grid,
+body[data-page="audit"] .audit-line-grid,
+body[data-page="audit"] .rubric-matrix,
+body[data-page="audit"] .audit-trace-grid,
+body[data-page="audit"] .audit-trace-meta {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+body[data-page="audit"] .audit-dashboard-grid {
+  grid-template-columns: 1fr;
+}
+
+body[data-page="audit"] .audit-metric-grid {
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+}
+
+body[data-page="audit"] .audit-blocker-grid {
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+body[data-page="audit"] .audit-report-grid {
+  grid-template-columns: minmax(13rem, 0.36fr) minmax(0, 1fr);
+}
+
+body[data-page="audit"] .audit-line-grid {
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+}
+
+body[data-page="audit"] .rubric-matrix {
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+body[data-page="audit"] .audit-trace-meta {
+  grid-template-columns: 1fr;
+}
+
+body[data-page="audit"] .metric--audit,
+body[data-page="audit"] .audit-status-card,
+body[data-page="audit"] .audit-blocker,
+body[data-page="audit"] .audit-line,
+body[data-page="audit"] .rubric-tile,
+body[data-page="audit"] .rubric-note,
+body[data-page="audit"] .trace-tile,
+body[data-page="audit"] .audit-action-list li {
+  min-width: 0;
+  border: 1px solid var(--page-border);
+  border-radius: 8px;
+  background: rgba(255, 243, 221, 0.055);
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+body[data-page="audit"] .metric--audit,
+body[data-page="audit"] .audit-status-card,
+body[data-page="audit"] .audit-blocker,
+body[data-page="audit"] .rubric-tile,
+body[data-page="audit"] .rubric-note,
+body[data-page="audit"] .trace-tile {
+  padding: 0.85rem;
+}
+
+body[data-page="audit"] .metric--audit {
+  min-height: 5.5rem;
+}
+
+body[data-page="audit"] .metric--audit .metric__value {
+  font-size: 1rem;
+}
+
+body[data-page="audit"] .audit-status-card {
+  display: grid;
+  align-content: start;
+  gap: 0.45rem;
+}
+
+body[data-page="audit"] .audit-status-card span,
+body[data-page="audit"] .audit-blocker span,
+body[data-page="audit"] .rubric-tile span,
+body[data-page="audit"] .rubric-note span,
+body[data-page="audit"] .trace-tile span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+body[data-page="audit"] .audit-status-card strong,
+body[data-page="audit"] .audit-blocker strong,
+body[data-page="audit"] .rubric-tile strong,
+body[data-page="audit"] .rubric-note strong,
+body[data-page="audit"] .trace-tile strong {
+  color: var(--text);
+  line-height: 1.4;
+}
+
+body[data-page="audit"] .audit-status-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+body[data-page="audit"] .audit-blocker--clear {
+  border-color: rgba(40, 116, 71, 0.42);
+  background: rgba(40, 116, 71, 0.13);
+}
+
+body[data-page="audit"] .audit-line {
+  min-height: auto;
+  padding: 0.8rem;
+  line-height: 1.5;
+}
+
+body[data-page="audit"] .rubric-tile {
+  display: grid;
+  gap: 0.55rem;
+  align-content: start;
+  min-height: auto;
+}
+
+body[data-page="audit"] .rubric-note {
+  grid-column: 1 / -1;
+}
+
+body[data-page="audit"] .audit-action-list {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+body[data-page="audit"] .audit-action-list li {
+  display: grid;
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+  padding: 0.65rem 0.75rem;
+}
+
+body[data-page="audit"] .audit-action-list span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+body[data-page="audit"] .audit-action-list strong {
+  min-width: 0;
+  color: var(--text);
+}
+
+body[data-page="audit"] .feature-grid {
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+}
+
+body[data-page="audit"] .feature {
+  position: relative;
+  min-height: auto;
+  padding: 0.95rem;
+  border-radius: 8px;
+}
+
+body[data-page="audit"] .feature::before {
+  content: none;
+}
+
+body[data-page="audit"] .feature .metric__label {
+  padding-right: 0;
+}
+
+body[data-page="audit"] .feature__value {
+  font-size: 1.08rem;
+}
+
+body[data-page="audit"] .feature__bar {
+  margin: 0.55rem 0;
+}
+
+@media (max-width: 1080px) {
+  body[data-page="audit"] .workspace--audit {
+    grid-template-areas:
+      "summary"
+      "grader"
+      "trace"
+      "rubric"
+      "features";
+    grid-template-columns: 1fr;
+  }
+
+  body[data-page="audit"] .audit-report-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  body[data-page="audit"] .audit-metric-grid,
+  body[data-page="audit"] .audit-blocker-grid,
+  body[data-page="audit"] .audit-line-grid,
+  body[data-page="audit"] .rubric-matrix,
+  body[data-page="audit"] .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Studio theme alignment with catalog and audit pages. */
+body[data-page="studio"] {
+  --page-bg: #09130f;
+  --page-panel: rgba(12, 27, 23, 0.82);
+  --page-border: rgba(230, 211, 166, 0.18);
+  --page-border-strong: rgba(230, 211, 166, 0.34);
+  --text: #fff3dd;
+  --muted: #b9c8b9;
+  --line: rgba(255, 243, 221, 0.12);
+  --line-strong: rgba(255, 243, 221, 0.22);
+  --shadow: 0 28px 80px rgba(0, 0, 0, 0.34);
+  --shadow-soft: 0 16px 38px rgba(0, 0, 0, 0.28);
+  background:
+    radial-gradient(circle at 8% 4%, rgba(210, 166, 106, 0.28), transparent 24rem),
+    radial-gradient(circle at 78% 0%, rgba(15, 108, 104, 0.38), transparent 28rem),
+    radial-gradient(circle at 42% 42%, rgba(180, 80, 45, 0.22), transparent 24rem),
+    linear-gradient(180deg, #09130f 0%, #111914 52%, #090f0c 100%);
+}
+
+body[data-page="studio"]::before {
+  background-image:
+    linear-gradient(rgba(255, 243, 221, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 243, 221, 0.045) 1px, transparent 1px);
+  background-size: 28px 28px;
+  mask-image: linear-gradient(180deg, black, transparent 92%);
+}
+
+body[data-page="studio"] .topbar,
+body[data-page="studio"] .hero,
+body[data-page="studio"] .panel {
+  border: 1px solid var(--page-border);
+  background:
+    linear-gradient(145deg, rgba(255, 243, 221, 0.09), rgba(255, 243, 221, 0.025)),
+    var(--page-panel);
+  box-shadow: var(--shadow);
+}
+
+body[data-page="studio"] .topbar {
+  position: sticky;
+  top: 1rem;
+  z-index: 10;
+}
+
+body[data-page="studio"] .hero {
+  position: relative;
+  overflow: hidden;
+  margin: 0 0.75rem 1.15rem;
+  padding: clamp(1.25rem, 2.8vw, 2.4rem);
+  border-radius: 34px;
+}
+
+body[data-page="studio"] .hero::after {
+  content: "";
+  position: absolute;
+  right: -6rem;
+  bottom: -8rem;
+  width: 24rem;
+  height: 24rem;
+  border-radius: 999px;
+  background:
+    radial-gradient(circle, rgba(210, 166, 106, 0.32), transparent 58%),
+    radial-gradient(circle, rgba(15, 108, 104, 0.36), transparent 64%);
+  filter: blur(2px);
+}
+
+body[data-page="studio"] .hero__copy,
+body[data-page="studio"] .hero__aside {
+  position: relative;
+  z-index: 1;
+}
+
+body[data-page="studio"] .hero h1 {
+  max-width: 13ch;
+  color: var(--text);
+  font-size: clamp(3rem, 6vw, 6.8rem);
+  letter-spacing: 0;
+}
+
+body[data-page="studio"] .topbar__brand,
+body[data-page="studio"] .topbar__links a,
+body[data-page="studio"] .status-pill,
+body[data-page="studio"] .metric-badge,
+body[data-page="studio"] .tag {
+  color: var(--text);
+  border-color: var(--page-border);
+  background: rgba(255, 243, 221, 0.08);
+}
+
+body[data-page="studio"] .topbar__links a.is-active,
+body[data-page="studio"] .topbar__links a:hover {
+  background: rgba(210, 166, 106, 0.18);
+  border-color: var(--page-border-strong);
+}
+
+body[data-page="studio"] .hero__lede,
+body[data-page="studio"] .panel__header p,
+body[data-page="studio"] .stack,
+body[data-page="studio"] .story-card,
+body[data-page="studio"] .toolbar__meta,
+body[data-page="studio"] .timeline__meta {
+  color: var(--muted);
+}
+
+body[data-page="studio"] .hero-card,
+body[data-page="studio"] .metric,
+body[data-page="studio"] .story-card,
+body[data-page="studio"] .task-meta,
+body[data-page="studio"] .trace-box,
+body[data-page="studio"] .timeline__item,
+body[data-page="studio"] .feature {
+  color: var(--text);
+  border-color: var(--page-border);
+  background:
+    linear-gradient(155deg, rgba(255, 243, 221, 0.12), rgba(255, 243, 221, 0.035)),
+    rgba(255, 243, 221, 0.035);
+}
+
+body[data-page="studio"] .control-callout,
+body[data-page="studio"] .table-wrap {
+  border-color: var(--page-border);
+  background: rgba(255, 243, 221, 0.045);
+}
+
+body[data-page="studio"] select {
+  color: var(--text);
+  border-color: var(--page-border);
+  background:
+    linear-gradient(180deg, rgba(255, 243, 221, 0.11), rgba(255, 243, 221, 0.055)),
+    #102620;
+}
+
+body[data-page="studio"] .button {
+  border: 0;
+  background: linear-gradient(135deg, #f2ba69 0%, #d96d3d 48%, #0f8a83 100%);
+  color: #11140f;
+  box-shadow: 0 16px 30px rgba(217, 109, 61, 0.22);
+}
+
+body[data-page="studio"] .button--ghost {
+  color: var(--text);
+  border: 1px solid var(--page-border);
+  background: rgba(255, 243, 221, 0.075);
+  box-shadow: none;
+}
+
+body[data-page="studio"] .data-table {
+  background: rgba(255, 243, 221, 0.05);
+}
+
+body[data-page="studio"] .data-table th {
+  background: #102620;
+  color: var(--muted);
+}
+
+body[data-page="studio"] .data-table td {
+  color: var(--text);
+  border-bottom-color: rgba(255, 243, 221, 0.09);
+}
+
+body[data-page="studio"] .data-table tbody tr:hover {
+  background: rgba(15, 138, 131, 0.12);
+}
+
+body[data-page="studio"] .workspace--studio {
+  gap: 1.15rem;
+}

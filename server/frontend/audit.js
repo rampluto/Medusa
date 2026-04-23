@@ -6,42 +6,151 @@ async function initAuditPage() {
   const shared = window.MedusaShared;
   const { tasks, agents } = await shared.loadCatalog();
   shared.renderTopbarMeta(tasks, agents);
-  await Promise.all([renderSummary(tasks, agents), renderGrader(), renderFeatures()]);
+
+  const payload = shared.basePayload();
+  const [preview, graderData, evaluationData, featureData] = await Promise.all([
+    shared.fetchJSON("/api/run/preview", payload, "POST"),
+    shared.fetchJSON("/api/run/grader", payload, "POST"),
+    shared.fetchJSON("/api/run/evaluate", payload, "POST"),
+    shared.fetchJSON("/api/run/feature-vector", payload, "POST"),
+  ]);
+
+  const evaluation = graderData.evaluation || evaluationData.evaluation;
+  renderStatus(tasks, agents, preview, graderData);
+  renderSummary(tasks, agents, preview, graderData, evaluation);
+  renderGrader(graderData);
+  renderEvaluation(evaluation);
+  renderTrace(tasks, agents, preview);
+  renderFeatures(featureData.features);
 }
 
-async function renderSummary(tasks, agents) {
+function renderStatus(tasks, agents, preview, graderData) {
   const shared = window.MedusaShared;
-  const preview = await shared.fetchJSON("/api/run/preview", shared.basePayload(), "POST");
+  const task = preview.task || shared.getCurrentTask(tasks);
+  const agent = shared.getCurrentAgent(agents);
+  const tone = graderData.ready_for_commit ? "is-good" : "tone-warn";
+
+  document.getElementById("audit-status").innerHTML = `
+    <span class="status-pill ${tone}">${escapeHTML(task.name)} · ${escapeHTML(preview.summary.stage)}</span>
+    <span class="status-pill">${escapeHTML(agent ? agent.name : "n/a")}</span>
+    <span class="status-pill">${preview.action_count} step${preview.action_count === 1 ? "" : "s"}</span>
+  `;
+}
+
+function renderSummary(tasks, agents, preview, graderData, evaluation) {
+  const shared = window.MedusaShared;
+  const task = preview.task || shared.getCurrentTask(tasks);
+  const agent = shared.getCurrentAgent(agents);
+  const score = typeof evaluation?.score === "number" ? evaluation.score : null;
+
+  const metrics = [
+    ["Task", task.name],
+    ["Agent", agent ? agent.name : "n/a"],
+    ["Difficulty", task.difficulty],
+    ["Stage", preview.summary.stage],
+    ["Steps", preview.action_count],
+    ["Reward", shared.formatNumber(preview.summary.cumulative_reward)],
+    ["Score", score === null ? "n/a" : shared.formatNumber(score)],
+    ["Grade", evaluation?.grade || "n/a"],
+    ["Ready", graderData.ready_for_commit ? "yes" : "no"],
+    ["Silver Rows", preview.summary.silver_row_count],
+    ["Quarantine", preview.summary.quarantine_row_count],
+    ["Seed", preview.seed],
+  ];
+
+  const blockers = graderData.blockers.length
+    ? graderData.blockers
+    : ["No active blockers."];
+
+  document.getElementById("audit-summary").innerHTML = `
+    <div class="audit-metric-grid">
+      ${metrics.map(([label, value]) => metricTile(label, value)).join("")}
+    </div>
+    <div class="audit-blocker-grid">
+      ${blockers.map((blocker) => blockerTile(blocker, graderData.blockers.length === 0)).join("")}
+    </div>
+  `;
+}
+
+function renderGrader(graderData) {
+  const lines = graderData.grader.lines.length
+    ? graderData.grader.lines
+    : ["No grader report yet. Commit the run to trigger the deterministic audit."];
+
+  document.getElementById("grader-report").innerHTML = `
+    <article class="audit-status-card ${graderData.grader.passed ? "is-good" : "tone-warn"}">
+      <span>Grader</span>
+      <strong>${graderData.grader.passed ? "Passed" : "Not passed yet"}</strong>
+      <p>${graderData.ready_for_commit ? "Ready for commit." : "Resolve blockers before commit."}</p>
+    </article>
+    <div class="audit-line-grid">
+      ${lines.map((line) => `<article class="audit-line ${lineTone(line)}">${escapeHTML(line)}</article>`).join("")}
+    </div>
+  `;
+}
+
+function renderEvaluation(evaluation) {
+  const shared = window.MedusaShared;
+  if (!evaluation) {
+    document.getElementById("evaluation-breakdown").innerHTML = `<div class="empty">Evaluation is not available yet.</div>`;
+    return;
+  }
+
+  const breakdown = Object.entries(evaluation.breakdown || {});
+  document.getElementById("evaluation-breakdown").innerHTML = `
+    <article class="audit-status-card ${evaluation.passed ? "is-good" : "tone-warn"}">
+      <span>Overall</span>
+      <strong>${shared.formatNumber(evaluation.score)} · ${escapeHTML(evaluation.grade)}</strong>
+      <p>${evaluation.passed ? "Passing rubric result." : "Below pass threshold."}</p>
+    </article>
+    ${breakdown
+      .map(
+        ([key, value]) => `
+          <article class="rubric-tile">
+            <span>${escapeHTML(shared.titleize(key))}</span>
+            <strong>${shared.formatNumber(value)}</strong>
+            <div class="feature__bar"><span style="width:${shared.clampBar(value)}%"></span></div>
+          </article>
+        `
+      )
+      .join("")}
+    ${
+      evaluation.notes?.length
+        ? `<article class="rubric-note"><span>Notes</span><strong>${evaluation.notes.map(escapeHTML).join(" | ")}</strong></article>`
+        : ""
+    }
+  `;
+}
+
+function renderTrace(tasks, agents, preview) {
+  const shared = window.MedusaShared;
   const state = shared.getState();
   const task = preview.task || shared.getCurrentTask(tasks);
   const agent = shared.getCurrentAgent(agents);
 
-  document.getElementById("audit-status").innerHTML = `
-    <span class="status-pill ${preview.summary.done ? "is-good" : ""}">
-      ${task.name} · ${preview.summary.done ? "committed or failed" : "still running"}
-    </span>
-    <span class="status-pill">${preview.action_count} replayed step${preview.action_count === 1 ? "" : "s"}</span>
-  `;
-
-  document.getElementById("audit-summary").innerHTML = [
-    shared.metricCard("Task", task.name),
-    shared.metricCard("Agent", agent ? agent.name : "n/a"),
-    shared.metricCard("Difficulty", task.difficulty),
-    shared.metricCard("Steps", preview.action_count),
-    shared.metricCard("Reward", shared.formatNumber(preview.summary.cumulative_reward)),
-  ].join("");
-
   document.getElementById("audit-trace").innerHTML = `
-    <div class="info-pair"><span>Agent</span><strong>${agent ? agent.name : "n/a"}</strong></div>
-    <div class="info-pair"><span>Description</span><strong>${task.description}</strong></div>
-    <div class="info-pair"><span>Seed</span><strong>${preview.seed}</strong></div>
-    <div class="info-pair"><span>Current stage</span><strong>${preview.summary.stage}</strong></div>
-    <div class="info-pair"><span>Observation</span><strong>${preview.observation.message}</strong></div>
-    <div class="info-pair"><span>Trace</span><strong>${
-      state.actions.length
-        ? state.actions.map((action, index) => `${index + 1}. ${action.action}`).join(" | ")
-        : "No actions recorded yet."
-    }</strong></div>
+    <div class="audit-trace-meta">
+      ${traceTile("Task", task.name)}
+      ${traceTile("Agent", agent ? agent.name : "n/a")}
+      ${traceTile("Stage", preview.summary.stage)}
+      ${traceTile("Observation", preview.observation.message)}
+    </div>
+    <ol class="audit-action-list">
+      ${
+        state.actions.length
+          ? state.actions
+              .map(
+                (action, index) => `
+                  <li>
+                    <span>${String(index + 1).padStart(2, "0")}</span>
+                    <strong>${escapeHTML(action.action)}</strong>
+                  </li>
+                `
+              )
+              .join("")
+          : `<li><span>00</span><strong>No actions recorded yet.</strong></li>`
+      }
+    </ol>
     <div class="action-row">
       <a class="button" href="/medusa/studio">Back To Studio</a>
       <a class="button button--ghost" href="/medusa/tasks">Browse Tasks</a>
@@ -49,67 +158,69 @@ async function renderSummary(tasks, agents) {
   `;
 }
 
-async function renderGrader() {
+function renderFeatures(features) {
   const shared = window.MedusaShared;
-  const [graderData, evaluationData] = await Promise.all([
-    shared.fetchJSON("/api/run/grader", shared.basePayload(), "POST"),
-    shared.fetchJSON("/api/run/evaluate", shared.basePayload(), "POST"),
-  ]);
-
-  const evaluation = graderData.evaluation || evaluationData.evaluation;
-  document.getElementById("grader-report").innerHTML = `
-    <span class="metric-badge ${graderData.grader.passed ? "is-good" : "is-bad"}">
-      ${graderData.committed ? (graderData.grader.passed ? "Grader passed" : "Grader failed") : "Pre-commit audit"}
-    </span>
-    ${
-      graderData.grader.lines.length
-        ? graderData.grader.lines.map((line) => `<div>${line}</div>`).join("")
-        : `<div>No grader report yet. Commit the run to trigger the deterministic audit.</div>`
-    }
-    ${
-      graderData.blockers.length
-        ? `<div><strong>Current blockers:</strong> ${graderData.blockers.join(" | ")}</div>`
-        : ""
-    }
-  `;
-
-  document.getElementById("evaluation-breakdown").innerHTML = evaluation
-    ? `
-        <div class="info-pair"><span>Score</span><strong>${evaluation.score}</strong></div>
-        <div class="info-pair"><span>Grade</span><strong>${evaluation.grade}</strong></div>
-        <div class="info-pair"><span>Passed</span><strong>${evaluation.passed ? "yes" : "no"}</strong></div>
-        ${Object.entries(evaluation.breakdown || {})
-          .map(
-            ([key, value]) => `
-              <div class="rubric-row">
-                <span>${shared.titleize(key)}</span>
-                <strong>${value}</strong>
-              </div>
-            `
-          )
-          .join("")}
-        ${
-          evaluation.notes?.length
-            ? `<div class="info-pair"><span>Notes</span><strong>${evaluation.notes.join(" | ")}</strong></div>`
-            : ""
-        }
-      `
-    : `<div class="empty">Evaluation is not available yet.</div>`;
-}
-
-async function renderFeatures() {
-  const shared = window.MedusaShared;
-  const data = await shared.fetchJSON("/api/run/feature-vector", shared.basePayload(), "POST");
-  document.getElementById("feature-grid").innerHTML = data.features
+  document.getElementById("feature-grid").innerHTML = features
     .map(
       (feature) => `
         <article class="feature">
-          <div class="metric__label">${feature.label}</div>
+          <div class="metric__label">${escapeHTML(feature.label)}</div>
           <div class="feature__value">${shared.formatNumber(feature.value)}</div>
           <div class="feature__bar"><span style="width:${shared.clampBar(feature.value)}%"></span></div>
-          <div>${feature.description}</div>
+          <div>${escapeHTML(feature.description)}</div>
         </article>
       `
     )
     .join("");
+}
+
+function metricTile(label, value) {
+  return `
+    <article class="metric metric--audit">
+      <span class="metric__label">${escapeHTML(label)}</span>
+      <span class="metric__value">${escapeHTML(`${value}`)}</span>
+    </article>
+  `;
+}
+
+function blockerTile(blocker, clear) {
+  return `
+    <article class="audit-blocker ${clear ? "audit-blocker--clear" : ""}">
+      <span>${clear ? "Clear" : "Blocker"}</span>
+      <strong>${escapeHTML(blocker)}</strong>
+    </article>
+  `;
+}
+
+function traceTile(label, value) {
+  return `
+    <article class="trace-tile">
+      <span>${escapeHTML(label)}</span>
+      <strong>${escapeHTML(`${value}`)}</strong>
+    </article>
+  `;
+}
+
+function lineTone(line) {
+  const normalized = line.toLowerCase();
+  if (normalized.includes("fail") || normalized.includes("crash") || normalized.includes("null_fail")) {
+    return "is-bad";
+  }
+  if (normalized.includes("pass") || normalized.includes("ok")) {
+    return "is-good";
+  }
+  return "";
+}
+
+function escapeHTML(value) {
+  return `${value ?? ""}`.replace(/[&<>"']/g, (char) => {
+    const replacements = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;",
+    };
+    return replacements[char];
+  });
 }

@@ -56,6 +56,7 @@ class Grader:
         silver_at_day_start: int,
         current_day: int,
         contract_columns: List[str],
+        merged_today: bool = False,
     ) -> GraderResult:
         """Run all four grader checks.
 
@@ -72,7 +73,7 @@ class Grader:
 
         # ── 1. Freshness Check ───────────────────────────────────────
         silver_len = len(silver)
-        if silver_len > silver_at_day_start:
+        if silver_len > silver_at_day_start or merged_today:
             result.freshness_ok = True
         else:
             result.failures.append(
@@ -108,11 +109,11 @@ class Grader:
             result.type_integrity_ok = True
 
         # ── 4. Null Integrity (Day 28+) ──────────────────────────────
-        if current_day >= 28 and not silver.empty and "customer_id" in silver.columns:
-            null_count = int(silver["customer_id"].isnull().sum())
+        if current_day >= 28 and not silver.empty and "user_id" in silver.columns:
+            null_count = int(silver["user_id"].isnull().sum())
             if null_count > 0:
                 result.failures.append(
-                    f"NULL_FAIL: {null_count} NULL customer_id rows in Silver "
+                    f"NULL_FAIL: {null_count} NULL user_id rows in Silver "
                     f"(should be quarantined)."
                 )
             else:

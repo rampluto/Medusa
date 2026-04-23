@@ -8,15 +8,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
-import httpx
 import pandas as pd
 from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 try:
-    from ..models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+    from ..models import MedusaAction, MedusaActionType
     from ..tasks import TASKS, Task, score_episode
     from .agent_policies import (
         AGENT_REGISTRY,
@@ -28,7 +27,7 @@ try:
     from .medusa_env import MedusaEnv
 except ImportError:
     try:
-        from medusa_env.models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+        from medusa_env.models import MedusaAction, MedusaActionType
         from medusa_env.tasks import TASKS, Task, score_episode
         from medusa_env.server.agent_policies import (
             AGENT_REGISTRY,
@@ -39,7 +38,7 @@ except ImportError:
         )
         from medusa_env.server.medusa_env import MedusaEnv
     except ImportError:
-        from models import MedusaAction, MedusaActionType, MedusaObservation, MedusaState
+        from models import MedusaAction, MedusaActionType
         from server.agent_policies import (
             AGENT_REGISTRY,
             DEFAULT_AGENT_ID,
@@ -53,6 +52,8 @@ except ImportError:
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 AVAILABLE_TABLES = (
+    "daily_raw",
+    "daily_cleaned",
     "bronze_a",
     "bronze_a_prepped",
     "bronze_b",
@@ -64,6 +65,41 @@ AVAILABLE_TABLES = (
 DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
 
 ACTION_METADATA: Dict[MedusaActionType, Dict[str, str]] = {
+    MedusaActionType.PROFILE_TABLE: {
+        "category": "inspect",
+        "label": "Profile Table",
+        "description": "Inspect today's Bronze batch for schema, nulls, types, and duplicate signals.",
+    },
+    MedusaActionType.CLEAN_COLUMN: {
+        "category": "clean",
+        "label": "Clean Column",
+        "description": "Apply a specific cast, strip, or fill operation to a dirty column.",
+    },
+    MedusaActionType.DEDUPLICATE: {
+        "category": "clean",
+        "label": "Deduplicate",
+        "description": "Remove duplicate rows from today's batch before merging.",
+    },
+    MedusaActionType.EVOLVE_SILVER_SCHEMA: {
+        "category": "schema",
+        "label": "Evolve Silver Schema",
+        "description": "Add a drifted column from today's Bronze batch to the Silver data contract.",
+    },
+    MedusaActionType.QUARANTINE_ROWS: {
+        "category": "quality",
+        "label": "Quarantine Rows",
+        "description": "Route unsalvageable rows, such as null primary keys, into quarantine.",
+    },
+    MedusaActionType.EXECUTE_MERGE: {
+        "category": "merge",
+        "label": "Execute Merge",
+        "description": "Merge today's cleaned batch into the cumulative Silver table.",
+    },
+    MedusaActionType.COMMIT_DAY: {
+        "category": "finalize",
+        "label": "Commit Day",
+        "description": "Run the deterministic grader for the day and advance the episode clock.",
+    },
     MedusaActionType.SYNC_CHECK: {
         "category": "freshness",
         "label": "Sync Check",
@@ -122,41 +158,41 @@ ACTION_METADATA: Dict[MedusaActionType, Dict[str, str]] = {
 }
 
 FEATURE_LABELS = [
+    "day_frac",
+    "step_frac",
+    "silver_size_norm",
+    "quarantine_size_norm",
+    "retry_norm",
+    "anomaly_count_norm",
+    "cleaned_count_norm",
     "time_delta_a_norm",
     "time_delta_b_norm",
     "is_stale_a",
     "is_stale_b",
     "null_ratio_key_a",
     "null_ratio_key_b",
-    "uniqueness_a",
-    "uniqueness_b",
     "match_rate",
-    "new_cols_a_norm",
-    "new_cols_b_norm",
-    "schema_compat",
-    "did_prep_a",
-    "did_prep_b",
-    "did_dedup_b",
-    "step_frac",
+    "did_dedup_today",
+    "did_evolve_schema",
 ]
 
 FEATURE_DESCRIPTIONS = {
+    "day_frac": "Episode day progress across the 30-day gauntlet.",
+    "step_frac": "Progress through the current day's 10-step action budget.",
+    "silver_size_norm": "Cumulative Silver row count normalized against the environment scale.",
+    "quarantine_size_norm": "Current quarantine row count normalized against the environment scale.",
+    "retry_norm": "Current blocked-action retry pressure for the day.",
+    "anomaly_count_norm": "Number of known anomalies scheduled for the current day.",
+    "cleaned_count_norm": "How many column-cleaning operations have been completed today.",
     "time_delta_a_norm": "Source A freshness signal, normalized against 48 hours.",
     "time_delta_b_norm": "Source B freshness signal, normalized against 48 hours.",
     "is_stale_a": "Whether Source A is stale relative to the configured threshold.",
     "is_stale_b": "Whether Source B is stale relative to the configured threshold.",
     "null_ratio_key_a": "Fraction of null join keys currently present in Source A.",
     "null_ratio_key_b": "Fraction of null join keys currently present in Source B.",
-    "uniqueness_a": "Key uniqueness ratio in Source A.",
-    "uniqueness_b": "Key uniqueness ratio in Source B.",
-    "match_rate": "How many Source A keys are currently resolvable in Source B.",
-    "new_cols_a_norm": "Normalized count of drifted columns arriving from Source A.",
-    "new_cols_b_norm": "Normalized count of drifted columns arriving from Source B.",
-    "schema_compat": "Schema compatibility score for the active join path.",
-    "did_prep_a": "Whether key preparation has been applied to Source A.",
-    "did_prep_b": "Whether key preparation has been applied to Source B.",
-    "did_dedup_b": "Whether Source B has been deduplicated.",
-    "step_frac": "Episode progress as a fraction of the step budget.",
+    "match_rate": "Merge or legacy join match signal.",
+    "did_dedup_today": "Whether deduplication has been performed for the current day.",
+    "did_evolve_schema": "Whether schema evolution has been performed in this episode.",
 }
 
 
@@ -166,6 +202,13 @@ class TraceRequest(BaseModel):
     task_id: Optional[str] = None
     seed: Optional[int] = None
     actions: List[MedusaAction] = Field(default_factory=list)
+
+    @field_validator("actions", mode="before")
+    @classmethod
+    def normalize_actions(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [_normalize_action_payload(action) for action in value]
 
     @model_validator(mode="after")
     def validate_source(self) -> "TraceRequest":
@@ -187,6 +230,11 @@ class StepTraceRequest(TraceRequest):
     """Trace replay request that appends one more action."""
 
     next_action: MedusaAction
+
+    @field_validator("next_action", mode="before")
+    @classmethod
+    def normalize_next_action(cls, value: Any) -> Any:
+        return _normalize_action_payload(value)
 
 
 class ResetTraceRequest(BaseModel):
@@ -219,12 +267,23 @@ class TableRequest(TraceRequest):
         "bronze_a_prepped",
         "bronze_b",
         "bronze_b_prepped",
+        "daily_raw",
+        "daily_cleaned",
         "joined",
         "silver",
         "quarantine",
     ]
     page: int = 1
     page_size: int = 25
+
+
+def _normalize_action_payload(action: Any) -> Any:
+    if isinstance(action, dict):
+        return {
+            "action": action.get("action"),
+            "params": action.get("params") or {},
+        }
+    return action
 
 
 class AutoRunRequest(BaseModel):
@@ -289,41 +348,46 @@ def register_custom_routes(app: FastAPI) -> None:
         if task is None:
             raise HTTPException(status_code=404, detail=f"Unknown task_id={task_id!r}.")
 
-        reset_payload = await _post_local_json(
-            app,
-            f"/api/run/reset/{task_id}",
-            {},
-        )
-        seed = reset_payload["seed"]
+        seed = task.seed
         policy = build_agent(request.agent_id, seed=seed)
-        actions: List[Dict[str, Any]] = []
-        current_payload = reset_payload
+        actions: List[MedusaAction] = []
         agent_steps = 0
+        max_agent_steps = 300
 
-        while not current_payload["summary"]["done"]:
-            state = MedusaState(**current_payload["state"])
-            observation = MedusaObservation(**current_payload["observation"])
-            next_action_type = policy.select_action(task=task, state=state, observation=observation)
-            next_action = {"action": next_action_type.value, "params": {}}
-            current_payload = await _post_local_json(
-                app,
-                "/api/run/step",
-                {
-                    "task_id": task_id,
-                    "actions": actions,
-                    "next_action": next_action,
-                },
-            )
-            actions = [*actions, next_action]
-            agent_steps += 1
+        env = MedusaEnv()
+        try:
+            observation = env.reset(seed=seed)
 
-        current_payload["agent"] = _serialize_agent(request.agent_id)
-        current_payload["auto_run"] = {
+            while not observation.done and agent_steps < max_agent_steps:
+                selected_action = policy.select_action(
+                    task=task,
+                    state=env.state,
+                    observation=observation,
+                )
+                if isinstance(selected_action, MedusaAction):
+                    next_action = selected_action
+                else:
+                    next_action = MedusaAction(action=selected_action.value, params={})
+
+                observation = env.step(next_action)
+                actions.append(next_action)
+                agent_steps += 1
+
+            payload = _build_run_payload(env, task, seed, observation, actions)
+        finally:
+            close = getattr(env, "close", None)
+            if callable(close):
+                close()
+
+        terminated_early = not payload["summary"]["done"]
+        payload["agent"] = _serialize_agent(request.agent_id)
+        payload["auto_run"] = {
             "agent_steps": agent_steps,
-            "completed": bool(current_payload["summary"]["done"]),
-            "terminated_early": False,
+            "completed": bool(payload["summary"]["done"]),
+            "terminated_early": terminated_early,
+            "max_agent_steps": max_agent_steps,
         }
-        return current_payload
+        return payload
 
     @router.post("/run/step")
     async def step_run(request: StepTraceRequest) -> Dict[str, Any]:
@@ -411,24 +475,14 @@ def _with_replay(
             close()
 
 
-async def _post_local_json(app: FastAPI, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://medusa-local") as client:
-        response = await client.post(path, json=payload)
-    data = response.json()
-    if not response.is_success:
-        detail = data.get("detail", response.text)
-        raise HTTPException(status_code=response.status_code, detail=detail)
-    return data
-
-
 def _serialize_task(task: Optional[Task]) -> Optional[Dict[str, Any]]:
     return asdict(task) if task is not None else None
 
 
 def _serialize_action(action: MedusaAction) -> Dict[str, Any]:
+    action_name = action.action.value if hasattr(action.action, "value") else str(action.action)
     return {
-        "action": action.action.value,
+        "action": action_name,
         "params": action.params,
     }
 
@@ -611,8 +665,18 @@ def _build_analysis_payload(
             },
             "schema": {
                 "did_evolve_schema": state.did_evolve_schema,
-                "new_cols_a": state.new_cols_a,
-                "new_cols_b": state.new_cols_b,
+                "contract_columns": state.current_contract_columns,
+                "pending_columns": _pending_schema_columns(state),
+            },
+            "day": {
+                "current_day": state.current_day,
+                "step_count": state.step_count,
+                "retry_count": state.retry_count,
+                "anomalies": _today_anomalies(state),
+                "cleaned_columns": sorted(list(state.cleaned_columns_today)),
+                "profiled_tables": state.profiled_tables_today,
+                "deduped_today": state.did_dedup_today,
+                "merged_today": state.did_merge_today,
             },
             "history": {
                 "did_scd": state.did_scd,
@@ -704,41 +768,66 @@ def _serialize_dataframe(df: pd.DataFrame, page: int, page_size: int) -> Dict[st
 
 def _commit_blockers(state: Any) -> List[str]:
     blockers: List[str] = []
-    if (state.is_stale_a or state.is_stale_b) and not state.did_sync_check:
-        blockers.append("Run SYNC_CHECK before processing stale sources.")
-    if (state.new_cols_a or state.new_cols_b) and not state.did_evolve_schema:
-        blockers.append("Run EVOLVE_SCHEMA before committing schema drift.")
-    if not state.did_prep_a:
-        blockers.append("Prepare Source A keys before joining.")
-    if not state.did_prep_b:
-        blockers.append("Prepare Source B keys before joining.")
-    if state.uniqueness_b < 1.0 and not state.did_dedup_b:
-        blockers.append("Deduplicate Source B before joining to avoid row explosion.")
-    if not state.did_join:
-        blockers.append("Execute a join before committing.")
-    if not state.did_scd:
-        blockers.append("Apply an SCD merge before committing.")
-    if state.explosion_detected:
-        blockers.append("Current join path exploded row counts; revise before committing.")
+    if state.stage != "running":
+        return blockers
+    if not state.profiled_tables_today.get("bronze"):
+        blockers.append("Profile today's Bronze batch before committing.")
+    for column, operation in _today_anomalies(state):
+        if operation in {"strip", "cast", "fill_zero"}:
+            if (column, operation) not in state.cleaned_columns_today:
+                blockers.append(f"Clean {column} with {operation} before committing Day {state.current_day}.")
+        elif operation == "deduplicate" and not state.did_dedup_today:
+            blockers.append("Deduplicate today's batch before committing.")
+        elif operation == "evolve" and column not in state.current_contract_columns:
+            blockers.append(f"Evolve the Silver schema for {column} before committing.")
+        elif operation == "quarantine" and state.day28_quarantine_rows == 0:
+            blockers.append(f"Quarantine rows matching {column} IS NULL before committing.")
+    if state.uniqueness_b < 1.0 and not state.did_dedup_today:
+        blockers.append("Deduplicate today's batch before merging non-unique keys.")
+    if _needs_merge_today(state):
+        blockers.append("Execute today's merge before committing.")
     return blockers
 
 
 def _suggest_actions(state: Any) -> List[str]:
     suggestions: List[str] = []
-    if (state.is_stale_a or state.is_stale_b) and not state.did_sync_check:
-        suggestions.append(MedusaActionType.SYNC_CHECK.value)
-    if (state.new_cols_a or state.new_cols_b) and not state.did_evolve_schema:
-        suggestions.append(MedusaActionType.EVOLVE_SCHEMA.value)
-    if not state.did_prep_a:
-        suggestions.append(MedusaActionType.PREP_KEYS_A.value)
-    if not state.did_prep_b:
-        suggestions.append(MedusaActionType.PREP_KEYS_B.value)
-    if state.uniqueness_b < 1.0 and not state.did_dedup_b:
-        suggestions.append(MedusaActionType.DEDUPLICATE_B.value)
-    if not state.did_join:
-        suggestions.append(MedusaActionType.EXECUTE_JOIN_LEFT.value)
-    elif not state.did_scd:
-        suggestions.append(MedusaActionType.APPLY_SCD_2.value)
+    if not state.profiled_tables_today.get("bronze"):
+        suggestions.append(MedusaActionType.PROFILE_TABLE.value)
+        return suggestions
+    for column, operation in _today_anomalies(state):
+        if operation in {"strip", "cast", "fill_zero"} and (column, operation) not in state.cleaned_columns_today:
+            suggestions.append(MedusaActionType.CLEAN_COLUMN.value)
+            return suggestions
+        if operation == "deduplicate" and not state.did_dedup_today:
+            suggestions.append(MedusaActionType.DEDUPLICATE.value)
+            return suggestions
+        if operation == "evolve" and column not in state.current_contract_columns:
+            suggestions.append(MedusaActionType.EVOLVE_SILVER_SCHEMA.value)
+            return suggestions
+        if operation == "quarantine" and state.day28_quarantine_rows == 0:
+            suggestions.append(MedusaActionType.QUARANTINE_ROWS.value)
+            return suggestions
+    if state.uniqueness_b < 1.0 and not state.did_dedup_today:
+        suggestions.append(MedusaActionType.DEDUPLICATE.value)
+        return suggestions
+    if _needs_merge_today(state):
+        suggestions.append(MedusaActionType.EXECUTE_MERGE.value)
     else:
-        suggestions.append(MedusaActionType.COMMIT.value)
+        suggestions.append(MedusaActionType.COMMIT_DAY.value)
     return suggestions
+
+
+def _today_anomalies(state: Any) -> List[List[str]]:
+    return [list(item) for item in state.day_anomalies.get(state.current_day, [])]
+
+
+def _pending_schema_columns(state: Any) -> List[str]:
+    return [
+        column
+        for column, operation in _today_anomalies(state)
+        if operation == "evolve" and column not in state.current_contract_columns
+    ]
+
+
+def _needs_merge_today(state: Any) -> bool:
+    return not state.did_merge_today

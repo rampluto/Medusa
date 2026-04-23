@@ -4,9 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MEDUSA Audit Report</title>
-    <link rel="stylesheet" href="/medusa-static/app.css" />
+    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-grid-stable-20260423" />
   </head>
-  <body>
+  <body data-page="audit">
     <div class="shell shell--wide">
       <nav class="topbar">
         <a class="topbar__brand" href="/medusa/studio">MEDUSA</a>
@@ -21,10 +21,10 @@
       <header class="hero hero--audit">
         <div class="hero__copy">
           <p class="eyebrow">Audit Report</p>
-          <h1>See how the trace holds up under deterministic scrutiny</h1>
+          <h1>Audit Report</h1>
           <p class="hero__lede">
-            This page focuses on grader readiness, rubric breakdown, and the RL feature vector so you
-            can understand whether the current trace is actually worthy of commit.
+            Review commit readiness, grader output, rubric score, trace context, and feature signals
+            in a clean grid.
           </p>
         </div>
         <aside class="hero__aside">
@@ -40,40 +40,39 @@
       </header>
 
       <main class="workspace workspace--audit">
-        <section class="panel panel--rail">
+        <section class="panel panel--audit-summary">
           <div class="panel__header">
-            <h2>Run Summary</h2>
-            <p>High-level task and trace context.</p>
+            <h2>Audit Dashboard</h2>
+            <p>Run status, score, readiness, and blocking conditions.</p>
           </div>
-          <div id="audit-summary" class="summary-grid summary-grid--compact"></div>
+          <div id="audit-summary" class="audit-dashboard-grid"></div>
         </section>
 
-        <section class="panel panel--main panel--audit-page">
+        <section class="panel panel--audit-page">
           <div class="panel__header">
-            <h2>Grader And Rubric</h2>
-            <p>Deterministic grader output plus task-level evaluation.</p>
+            <h2>Grader Report</h2>
+            <p>Deterministic checks and report lines.</p>
           </div>
-          <div class="audit-grid">
-            <article class="audit-card">
-              <h3>Grader</h3>
-              <div id="grader-report" class="stack"></div>
-            </article>
-            <article class="audit-card">
-              <h3>Rubric</h3>
-              <div id="evaluation-breakdown" class="stack"></div>
-            </article>
-          </div>
+          <div id="grader-report" class="audit-report-grid"></div>
         </section>
 
-        <section class="panel panel--side">
+        <section class="panel panel--audit-trace">
           <div class="panel__header">
             <h2>Trace Snapshot</h2>
             <p>What the browser currently intends to replay.</p>
           </div>
-          <div id="audit-trace" class="stack"></div>
+          <div id="audit-trace" class="audit-trace-grid"></div>
         </section>
 
-        <section class="panel panel--wide">
+        <section class="panel panel--audit-rubric">
+          <div class="panel__header">
+            <h2>Rubric Matrix</h2>
+            <p>Task score broken into individual criteria.</p>
+          </div>
+          <div id="evaluation-breakdown" class="rubric-matrix"></div>
+        </section>
+
+        <section class="panel panel--audit-features">
           <div class="panel__header">
             <h2>Feature Vector</h2>
             <p>The 16-element normalized RL state translated into readable cards.</p>
@@ -85,6 +84,6 @@
     </div>
 
     <script src="/medusa-static/shared.js"></script>
-    <script src="/medusa-static/audit.js"></script>
+    <script src="/medusa-static/audit.js?v=medusa-grid-stable-20260423"></script>
   </body>
 </html>

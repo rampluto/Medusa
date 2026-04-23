@@ -1,5 +1,5 @@
 document.addEventListener("DOMContentLoaded", () => {
-  void initStudio();
+  void initStudio().catch((error) => showRunError(error));
 });
 
 async function initStudio() {
@@ -10,7 +10,8 @@ async function initStudio() {
   renderTaskSelect(tasks);
   renderAgentSelect(agents);
   renderTableSelect();
-  await runSelectedAgent(tasks, agents);
+  await refreshPreview(tasks, agents);
+  await Promise.all([refreshAnalysis(), refreshTimeline(), refreshTable()]);
 }
 
 function bindControls(tasks, agents) {
@@ -18,16 +19,16 @@ function bindControls(tasks, agents) {
 
   document.getElementById("task-select").addEventListener("change", async (event) => {
     shared.setTask(event.target.value);
-    await runSelectedAgent(tasks, agents);
+    await refreshSelectedTask(tasks, agents).catch((error) => showRunError(error));
   });
 
   document.getElementById("agent-select").addEventListener("change", async (event) => {
     shared.setAgent(event.target.value);
-    await runSelectedAgent(tasks, agents);
+    await refreshSelectedTask(tasks, agents).catch((error) => showRunError(error));
   });
 
   document.getElementById("rerun-agent").addEventListener("click", async () => {
-    await runSelectedAgent(tasks, agents);
+    await runSelectedAgent(tasks, agents).catch((error) => showRunError(error));
   });
 
   document.getElementById("table-select").addEventListener("change", async (event) => {
@@ -46,6 +47,11 @@ function bindControls(tasks, agents) {
     shared.setTablePage(state.tablePage + 1);
     await refreshTable();
   });
+}
+
+async function refreshSelectedTask(tasks, agents) {
+  await refreshPreview(tasks, agents);
+  await Promise.all([refreshAnalysis(), refreshTimeline(), refreshTable()]);
 }
 
 function renderTaskSelect(tasks) {
@@ -82,6 +88,8 @@ function renderTableSelect() {
   const shared = window.MedusaShared;
   const state = shared.getState();
   const tables = [
+    "daily_raw",
+    "daily_cleaned",
     "bronze_a",
     "bronze_a_prepped",
     "bronze_b",
@@ -105,15 +113,34 @@ function renderTableSelect() {
 async function runSelectedAgent(tasks, agents) {
   const shared = window.MedusaShared;
   const state = shared.getState();
+  const runButton = document.getElementById("rerun-agent");
+
+  if (!state.taskId || !state.agentId) {
+    throw new Error("Select both a task and an agent before running.");
+  }
+
   shared.resetTrace();
+  runButton.disabled = true;
+  runButton.textContent = "Running...";
   document.getElementById("hero-status").innerHTML = `<span class="status-pill">Running selected agent...</span>`;
   document.getElementById("trace-list").innerHTML = `<li class="empty">Executing replay...</li>`;
 
-  const preview = await shared.fetchJSON(`/api/run/autorun/${encodeURIComponent(state.taskId)}`, shared.agentPayload(), "POST");
-  shared.setTrace(preview.actions);
-  window.__medusaPreview = preview;
-  await renderPreview(tasks, agents);
-  await Promise.all([refreshAnalysis(), refreshTimeline(), refreshTable()]);
+  try {
+    const preview = await shared.fetchJSON(`/api/run/autorun/${encodeURIComponent(state.taskId)}`, shared.agentPayload(), "POST");
+    shared.setTrace(preview.actions);
+    window.__medusaPreview = preview;
+    await renderPreview(tasks, agents);
+    await Promise.all([refreshAnalysis(), refreshTimeline(), refreshTable()]);
+  } finally {
+    runButton.disabled = false;
+    runButton.textContent = "Run Selected Agent";
+  }
+}
+
+function showRunError(error) {
+  const message = error && error.message ? error.message : `${error}`;
+  document.getElementById("hero-status").innerHTML = `<span class="status-pill is-bad">Run failed</span>`;
+  document.getElementById("trace-list").innerHTML = `<li class="empty">${message}</li>`;
 }
 
 async function refreshPreview(tasks, agents) {

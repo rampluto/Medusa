@@ -331,6 +331,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             source_row_count=len(scen.bronze_a),
             source_a_row_count=len(scen.bronze_a),
             silver_row_count_at_day_start=0,
+            did_merge_today=False,
             total_raw_rows=0,
             total_quarantine_rows=0,
         )
@@ -823,7 +824,20 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             if not update_rows.empty:
                 silver = silver.set_index(self._primary_key)
                 update_rows_indexed = update_rows.set_index(self._primary_key)
-                silver.update(update_rows_indexed)
+                shared_columns = [col for col in update_rows_indexed.columns if col in silver.columns]
+                for col in shared_columns:
+                    updates = update_rows_indexed[col].dropna()
+                    common_index = silver.index.intersection(updates.index)
+                    if common_index.empty:
+                        continue
+                    try:
+                        silver.loc[common_index, col] = updates.loc[common_index].astype(
+                            silver[col].dtype,
+                            copy=False,
+                        )
+                    except (TypeError, ValueError):
+                        silver[col] = silver[col].astype(object)
+                        silver.loc[common_index, col] = updates.loc[common_index]
                 silver = silver.reset_index()
 
             # Append genuinely new rows
@@ -837,6 +851,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
 
         self._state.silver_row_count = len(self._tables.silver)
         self._state.match_rate = 1.0  # Direct merge = all rows match
+        self._state.did_merge_today = True
 
         # Legacy compat
         self._state.did_join = True
@@ -877,6 +892,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             silver_at_day_start=self._state.silver_row_count_at_day_start,
             current_day=self._state.current_day,
             contract_columns=self._state.current_contract_columns,
+            merged_today=self._state.did_merge_today,
         )
         grader_passed = grader_result.passed
         grader_report = grader_result.report
@@ -906,6 +922,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             self._state.profiled_tables_today = {}
             self._state.silver_row_count_at_day_start = silver_after_len
             self._state.did_dedup_today = False
+            self._state.did_merge_today = False
 
             if self._state.current_day > 30:
                 done = True
