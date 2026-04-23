@@ -15,7 +15,7 @@ from .models import MedusaAction, MedusaActionType, MedusaObservation, MedusaSta
 from .rewards import RewardEngine
 from .scenarios import DayDataGenerator, DayBatch, Scenario, ScenarioGenerator
 from .tasks import TASKS, Task, TaskResult, score_episode
-from .server.medusa_env import MedusaEnv
+from server.medusa_env import MedusaEnv
 
 __all__ = [
     "medusa_env",
