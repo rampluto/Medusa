@@ -316,7 +316,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             step_count=0,
             retry_count=0,
             day_anomalies=day_anomalies,
-            cleaned_columns_today=set(),
+            cleaned_columns_today=[],
             profiled_tables_today={},
             did_dedup_today=False,
             # Legacy freshness
@@ -589,7 +589,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         if col_op in self._state.cleaned_columns_today:
             return -2.0, f"BLOCK: ({col}, {op}) already applied today.", {}, True
 
-        self._state.cleaned_columns_today.add(col_op)
+        self._state.cleaned_columns_today.append(col_op)
 
         df = self._tables.daily_cleaned
         if col not in df.columns:
@@ -902,7 +902,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             self._state.current_day += 1
             self._state.step_count = 0
             self._state.retry_count = 0
-            self._state.cleaned_columns_today = set()
+            self._state.cleaned_columns_today = []
             self._state.profiled_tables_today = {}
             self._state.silver_row_count_at_day_start = silver_after_len
             self._state.did_dedup_today = False
