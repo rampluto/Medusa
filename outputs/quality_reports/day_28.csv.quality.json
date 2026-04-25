@@ -1,0 +1,186 @@
+{
+  "file": "data/olist/day_28.csv",
+  "score": 0.9774,
+  "passed": true,
+  "component_scores": {
+    "readability": 1.0,
+    "completeness": 0.98,
+    "uniqueness": 1.0,
+    "type_consistency": 1.0,
+    "date_format_sanity": 1.0,
+    "column_quality": 1.0,
+    "string_cleanliness": 1.0,
+    "numeric_sanity": 0.9136
+  },
+  "weights": {
+    "readability": 0.07,
+    "completeness": 0.18,
+    "uniqueness": 0.1,
+    "type_consistency": 0.16,
+    "date_format_sanity": 0.12,
+    "column_quality": 0.09,
+    "string_cleanliness": 0.06,
+    "numeric_sanity": 0.22
+  },
+  "details": {
+    "rows": 3755,
+    "columns": 10,
+    "column_names": [
+      "customer_id",
+      "order_id",
+      "product_id",
+      "seller_id",
+      "price",
+      "freight_value",
+      "customer_city",
+      "customer_state",
+      "order_date",
+      "discount_amount"
+    ],
+    "row_width": {
+      "bad_width_rows": 0,
+      "bad_width_ratio": 0.0
+    },
+    "completeness": {
+      "missing_cells": 751,
+      "total_cells": 37550,
+      "missing_ratio": 0.02
+    },
+    "uniqueness": {
+      "duplicate_rows": 0,
+      "duplicate_ratio": 0.0
+    },
+    "type_consistency": {
+      "columns": {
+        "customer_id": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3004,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "order_id": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "product_id": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "seller_id": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "price": {
+          "inferred_type": "numeric",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 1.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "freight_value": {
+          "inferred_type": "numeric",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 1.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "customer_city": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "customer_state": {
+          "inferred_type": "text",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "order_date": {
+          "inferred_type": "datetime",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 0.0,
+          "date_ratio": 1.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        },
+        "discount_amount": {
+          "inferred_type": "numeric",
+          "parseable_ratio": 1.0,
+          "non_null_values": 3755,
+          "numeric_ratio": 1.0,
+          "date_ratio": 0.0,
+          "boolean_ratio": 0.0,
+          "invalid_values": 0
+        }
+      }
+    },
+    "date_format_sanity": {
+      "date_columns": [
+        "order_date"
+      ],
+      "checked_date_columns": 1,
+      "columns": {
+        "order_date": {
+          "parseable_date_ratio": 1.0,
+          "dominant_format_ratio": 1.0,
+          "invalid_date_values": 0,
+          "formats_seen": {
+            "iso": 3755
+          }
+        }
+      }
+    },
+    "column_quality": {
+      "blank_column_names": 0,
+      "duplicate_column_names": 0,
+      "names_with_outer_whitespace": 0,
+      "unnamed_columns": 0
+    },
+    "string_cleanliness": {
+      "dirty_string_cells": 0,
+      "checked_non_null_cells": 36799,
+      "dirty_string_ratio": 0.0
+    },
+    "numeric_sanity": {
+      "numeric_columns": [
+        "price",
+        "freight_value",
+        "discount_amount"
+      ],
+      "outlier_cells": 973,
+      "checked_numeric_cells": 11265,
+      "outlier_ratio": 0.0864,
+      "constant_numeric_columns": 0
+    }
+  }
+}
