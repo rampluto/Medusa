@@ -114,7 +114,7 @@ def main() -> None:
         push_to_hub=args.push_to_hub,
         hub_model_id=effective_hub_model_id if effective_hub_model_id else None,
         dataset_text_field="text",
-        max_length=args.max_seq_len,
+        max_seq_length=args.max_seq_len,
     )
 
     # Keep compatibility across TRL versions.
