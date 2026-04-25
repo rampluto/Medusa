@@ -67,6 +67,32 @@ class MedusaState(State):
     profiled_tables_today: Dict[str, int] = Field(default_factory=dict)
     did_dedup_today: bool = False
 
+    @property
+    def unhandled_anomalies_today(self) -> Dict[str, List[str]]:
+        if self.current_day not in self.day_anomalies:
+            return {}
+            
+        op_map = {
+            "type_mixed": "cast",
+            "fill_null": "fill_zero",
+            "whitespace": "strip",
+            "negative": "fill_zero", # Default fallback for negatives if any
+        }
+            
+        unhandled = {}
+        cleaned_set = set(self.cleaned_columns_today)
+        for col, raw_op in self.day_anomalies[self.current_day]:
+            action_op = op_map.get(raw_op, raw_op)
+            if (col, action_op) not in cleaned_set:
+                unhandled.setdefault(col, []).append(action_op)
+        return unhandled
+
+    @property
+    def trap_type(self) -> str:
+        # Hardcoded trap days for the gauntlet
+        traps = {8: "type_trap", 14: "oom_trap", 21: "schema_drift", 28: "null_nuke"}
+        return traps.get(self.current_day, "")
+
     # --- Freshness (Legacy Phase-1 + v4.0) ---
     time_delta_a: float = 0.0
     time_delta_b: float = 0.0
