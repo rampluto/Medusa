@@ -18,14 +18,14 @@ import pandas as pd
 
 
 DEFAULT_WEIGHTS = {
-    "readability": 0.07,
-    "completeness": 0.18,
+    "readability": 0.05,
+    "completeness": 0.05,
     "uniqueness": 0.10,
-    "type_consistency": 0.16,
-    "date_format_sanity": 0.12,
-    "column_quality": 0.09,
-    "string_cleanliness": 0.06,
-    "numeric_sanity": 0.22,
+    "type_consistency": 0.05,
+    "date_format_sanity": 0.05,
+    "column_quality": 0.20,
+    "string_cleanliness": 0.25,
+    "numeric_sanity": 0.25,
 }
 
 NULL_MARKERS = {"", "na", "n/a", "null", "none", "nan", "nat", "-"}
@@ -196,6 +196,51 @@ def load_csv(
     data.columns = range(data.shape[1])
     total_rows = max(line_count - 1, len(data))
     return header, data, total_rows, None
+
+
+def required_unique_column_score(path: Path, column_name: str) -> tuple[float, dict[str, Any]]:
+    try:
+        data = pd.read_csv(
+            path,
+            dtype=str,
+            keep_default_na=False,
+            encoding="utf-8-sig",
+            usecols=[column_name],
+        )
+    except ValueError:
+        return 0.0, {
+            "column": column_name,
+            "passed": False,
+            "error": "column_not_found",
+            "checked_values": 0,
+            "null_values": 0,
+            "duplicate_values": 0,
+        }
+    except Exception as exc:  # noqa: BLE001 - CLI should report any parser failure.
+        return 0.0, {
+            "column": column_name,
+            "passed": False,
+            "error": str(exc),
+            "checked_values": 0,
+            "null_values": 0,
+            "duplicate_values": 0,
+        }
+
+    values = data[column_name].fillna("").astype(str).str.strip()
+    null_mask = values.str.lower().isin(NULL_MARKERS)
+    duplicate_mask = values[~null_mask].duplicated(keep="first")
+    null_values = int(null_mask.sum())
+    duplicate_values = int(duplicate_mask.sum())
+    passed = null_values == 0 and duplicate_values == 0
+    return (1.0 if passed else 0.0), {
+        "column": column_name,
+        "passed": passed,
+        "checked_values": int(len(values)),
+        "null_values": null_values,
+        "duplicate_values": duplicate_values,
+        "null_ratio": rounded(null_values / max(len(values), 1)),
+        "duplicate_ratio": rounded(duplicate_values / max((~null_mask).sum(), 1)),
+    }
 
 
 def normalize_frame(frame: pd.DataFrame, column_count: int) -> pd.DataFrame:
@@ -419,18 +464,16 @@ def column_quality_score(header: list[str]) -> tuple[float, dict[str, Any]]:
         return 0.0, {"issues": ["no_columns"]}
 
     counts = Counter(header)
-    blank_count = sum(not column.strip() for column in header)
     duplicate_count = sum(count - 1 for count in counts.values() if count > 1)
-    whitespace_count = sum(column != column.strip() for column in header)
-    unnamed_count = sum(column.lower().startswith("unnamed:") for column in header)
+    duplicate_columns = {name: count for name, count in counts.items() if count > 1}
 
-    duplicate_penalty = duplicate_count * 2
-    score = 1.0 - ((blank_count + duplicate_penalty + whitespace_count + unnamed_count) / len(header))
+    score = 1.0 - (duplicate_count / len(header))
     return clamp(score), {
-        "blank_column_names": blank_count,
+        "blank_column_names": 0,
         "duplicate_column_names": duplicate_count,
-        "names_with_outer_whitespace": whitespace_count,
-        "unnamed_columns": unnamed_count,
+        "duplicate_column_groups": duplicate_columns,
+        "names_with_outer_whitespace": 0,
+        "unnamed_columns": 0,
     }
 
 
@@ -462,36 +505,45 @@ def string_cleanliness_score(profile: FrameProfile, column_count: int) -> tuple[
 def numeric_sanity_score(header: list[str], profile: FrameProfile) -> tuple[float, dict[str, Any]]:
     numeric_columns = []
     checked_cells = 0
-    outlier_cells = 0
-    constant_numeric_columns = 0
+    null_values = 0
+    nan_values = 0
+    infinite_values = 0
+    bad_numeric_cells = 0
+    non_finite_markers = {"nan", "inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"}
+    infinite_markers = {"inf", "+inf", "-inf", "infinity", "+infinity", "-infinity"}
 
     for index, name in enumerate(header):
-        values = profile.sample_stripped.iloc[:, index][~profile.sample_missing.iloc[:, index]]
-        numeric_text = values[values.str.fullmatch(FLOAT_PATTERN, na=False)]
-        numeric_values = numeric_text.astype("float64")
-        numeric_values = numeric_values[numeric_values.between(-math.inf, math.inf)]
-        if len(numeric_values) < 3 or len(numeric_values) / max(len(values), 1) < 0.90:
+        values = profile.sample_stripped.iloc[:, index]
+        lowered = profile.sample_lowered.iloc[:, index]
+        missing = profile.sample_missing.iloc[:, index]
+        finite_numeric = values.str.fullmatch(FLOAT_PATTERN, na=False)
+        non_finite = lowered.isin(non_finite_markers)
+        observed_numeric = finite_numeric | lowered.isin(infinite_markers)
+        non_missing = ~missing
+
+        if int(observed_numeric.sum()) < 3 or float(observed_numeric[non_missing].mean()) < 0.90:
             continue
 
         numeric_columns.append(name or f"column_{index + 1}")
-        checked_cells += len(numeric_values)
-        if numeric_values.nunique(dropna=True) <= 1:
-            constant_numeric_columns += 1
-            continue
-
-        q1 = float(numeric_values.quantile(0.25))
-        q3 = float(numeric_values.quantile(0.75))
-        iqr = q3 - q1
-        if iqr <= 0:
-            continue
-
-        lower = q1 - (1.5 * iqr)
-        upper = q3 + (1.5 * iqr)
-        outlier_cells += int(((numeric_values < lower) | (numeric_values > upper)).sum())
+        checked_cells += len(values)
+        column_null_values = int(missing.sum())
+        column_nan_values = int((lowered == "nan").sum())
+        column_infinite_values = int(lowered.isin(infinite_markers).sum())
+        column_bad_cells = int((missing | non_finite).sum())
+        null_values += column_null_values
+        nan_values += column_nan_values
+        infinite_values += column_infinite_values
+        bad_numeric_cells += column_bad_cells
 
     if not numeric_columns:
         detail: dict[str, Any] = {
             "numeric_columns": [],
+            "bad_numeric_cells": 0,
+            "bad_numeric_ratio": 0.0,
+            "missing_values": 0,
+            "null_values": 0,
+            "nan_values": 0,
+            "infinite_values": 0,
             "outlier_cells": 0,
             "outlier_ratio": 0.0,
             "constant_numeric_columns": 0,
@@ -500,19 +552,24 @@ def numeric_sanity_score(header: list[str], profile: FrameProfile) -> tuple[floa
             detail["sampled_rows"] = len(profile.sample)
         return 1.0, detail
 
-    outlier_ratio = outlier_cells / max(checked_cells, 1)
-    constant_ratio = constant_numeric_columns / len(numeric_columns)
-    score = 1.0 - min(1.0, outlier_ratio + (0.5 * constant_ratio))
+    bad_numeric_ratio = bad_numeric_cells / max(checked_cells, 1)
+    score = 1.0 - bad_numeric_ratio
     detail: dict[str, Any] = {
         "numeric_columns": numeric_columns,
-        "outlier_cells": outlier_cells,
+        "bad_numeric_cells": bad_numeric_cells,
         "checked_numeric_cells": checked_cells,
-        "outlier_ratio": rounded(outlier_ratio),
-        "constant_numeric_columns": constant_numeric_columns,
+        "bad_numeric_ratio": rounded(bad_numeric_ratio),
+        "missing_values": null_values,
+        "null_values": null_values,
+        "nan_values": nan_values,
+        "infinite_values": infinite_values,
+        "outlier_cells": 0,
+        "outlier_ratio": 0.0,
+        "constant_numeric_columns": 0,
     }
     if profile.sampled:
         detail["sampled_rows"] = len(profile.sample)
-    return score, detail
+    return clamp(score), detail
 
 
 def row_width_score(profile: FrameProfile, column_count: int) -> tuple[float, dict[str, Any]]:
@@ -532,7 +589,11 @@ def row_width_score(profile: FrameProfile, column_count: int) -> tuple[float, di
     return 1.0 - bad_width_ratio, detail
 
 
-def score_csv(path: Path, show_progress: bool = False) -> dict[str, Any]:
+def score_csv(
+    path: Path,
+    show_progress: bool = False,
+    unique_column: str | None = None,
+) -> dict[str, Any]:
     progress = ProgressBar(show_progress)
     header, raw_frame, row_count, error = load_csv(path, progress)
     if error is not None:
@@ -583,6 +644,14 @@ def score_csv(path: Path, show_progress: bool = False) -> dict[str, Any]:
     progress.finish()
 
     overall = sum(component_scores[name] * DEFAULT_WEIGHTS[name] for name in DEFAULT_WEIGHTS)
+    required_unique_score = 1.0
+    if unique_column:
+        required_unique_score, unique_detail = required_unique_column_score(path, unique_column)
+        component_scores["required_unique_column"] = required_unique_score
+        details["required_unique_column"] = unique_detail
+        if required_unique_score == 0.0:
+            overall = 0.0
+
     return {
         "file": str(path),
         "score": rounded(clamp(overall)),
@@ -615,10 +684,15 @@ def print_text_report(result: dict[str, Any]) -> None:
     print(f"  - Bad-width rows: {details['row_width']['bad_width_rows']}")
     print(f"  - Missing cells: {details['completeness']['missing_cells']}")
     print(f"  - Duplicate rows: {details['uniqueness']['duplicate_rows']}")
+    if "required_unique_column" in details:
+        unique_details = details["required_unique_column"]
+        print(f"  - Required unique column: {unique_details['column']}")
+        print(f"  - Required unique nulls: {unique_details['null_values']}")
+        print(f"  - Required unique duplicates: {unique_details['duplicate_values']}")
     print(f"  - Duplicate columns: {details['column_quality']['duplicate_column_names']}")
     print(f"  - Checked date columns: {details['date_format_sanity']['checked_date_columns']}")
     print(f"  - Dirty string cells: {details['string_cleanliness']['dirty_string_cells']}")
-    print(f"  - Numeric outlier cells: {details['numeric_sanity']['outlier_cells']}")
+    print(f"  - Bad numeric cells: {details['numeric_sanity']['bad_numeric_cells']}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -637,6 +711,10 @@ def parse_args() -> argparse.Namespace:
         help="Optional path to write the JSON result.",
     )
     parser.add_argument(
+        "--unique-column",
+        help="Column that must contain no nulls and no duplicate values. Failure forces score to 0.",
+    )
+    parser.add_argument(
         "--progress",
         action="store_true",
         help="Show progress bars on stderr. Enabled by default for text output in a terminal.",
@@ -652,7 +730,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     show_progress = args.progress or (not args.json and not args.no_progress and sys.stderr.isatty())
-    result = score_csv(args.csv_file, show_progress=show_progress)
+    result = score_csv(args.csv_file, show_progress=show_progress, unique_column=args.unique_column)
 
     if args.output:
         args.output.write_text(json.dumps(result, indent=2), encoding="utf-8")
