@@ -14,6 +14,13 @@ import argparse
 import os
 from typing import Any
 
+# IMPORTANT: must be set as early as possible in HF Jobs containers.
+# Some libraries import numpy/MKL under the hood (or via torch/transformers), and
+# if MKL picks INTEL threading while OpenMP is GNU (libgomp), it can crash.
+os.environ.setdefault("MKL_THREADING_LAYER", "GNU")
+os.environ.setdefault("MKL_SERVICE_FORCE_INTEL", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
 import torch
 from datasets import load_dataset
 from peft import LoraConfig
@@ -50,6 +57,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument(
+        "--debug",
+        action="store_true",
+        help=(
+            "Print extra diagnostics (trainable params, label masking) to help debug "
+            "0 loss / NaN grad_norm issues in remote HF Jobs logs."
+        ),
+    )
+    parser.add_argument(
         "--push-to-hub",
         action="store_true",
         help="Push final model/checkpoints to Hub.",
@@ -69,6 +84,19 @@ def build_text(record: dict[str, Any], tokenizer: AutoTokenizer) -> dict[str, st
 
 def main() -> None:
     args = parse_args()
+
+    # ----
+    # BF16 safety: only enable if the GPU/runtime supports it.
+    # TRL/Accelerate can behave badly when bf16=True on unsupported hardware.
+    # ----
+    bf16_supported = bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported())
+    if args.debug:
+        print("CUDA available:", torch.cuda.is_available())
+        if torch.cuda.is_available():
+            print("GPU:", torch.cuda.get_device_name(0))
+            print("Compute capability:", torch.cuda.get_device_capability(0))
+        print("bf16_supported:", bf16_supported)
+
     print(f"Loading dataset: {args.dataset}")
     ds = load_dataset("json", data_files=args.dataset)["train"]
 
@@ -79,7 +107,13 @@ def main() -> None:
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        # Keep model dtype aligned with precision flags.
+        # If bf16 is supported, prefer bf16; else fp16 on CUDA; else fp32.
+        torch_dtype=(
+            torch.bfloat16
+            if bf16_supported
+            else (torch.float16 if torch.cuda.is_available() else torch.float32)
+        ),
         device_map="auto",
     )
 
@@ -109,12 +143,13 @@ def main() -> None:
         save_steps=args.save_steps,
         save_total_limit=2,
         report_to="none",
-        fp16=torch.cuda.is_available(),
-        bf16=False,
+        fp16=bool(torch.cuda.is_available() and (not bf16_supported)),
+        bf16=bf16_supported,
         push_to_hub=args.push_to_hub,
         hub_model_id=effective_hub_model_id if effective_hub_model_id else None,
         dataset_text_field="text",
         max_seq_length=args.max_seq_len,
+        packing=False,
     )
 
     # Keep compatibility across TRL versions.
@@ -143,6 +178,42 @@ def main() -> None:
             "Failed to initialize SFTTrainer with available signatures. "
             f"Errors: {init_errors}"
         )
+
+    # ----
+    # Debugging helpers for "loss=0" / "grad_norm=nan".
+    # These do not change training behavior; they just print state.
+    # ----
+    if args.debug:
+        # 1) Confirm LoRA attached trainable parameters
+        trainable_params = 0
+        total_params = 0
+        for _, p in model.named_parameters():
+            total_params += p.numel()
+            if p.requires_grad:
+                trainable_params += p.numel()
+        print(f"Model params total: {total_params:,}")
+        print(f"Model params trainable: {trainable_params:,}")
+        if trainable_params == 0:
+            raise RuntimeError(
+                "No trainable parameters found. LoRA may not have attached. "
+                "Try adjusting LoraConfig.target_modules for this model."
+            )
+
+        # 2) Confirm dataset produces non-masked labels
+        dl = trainer.get_train_dataloader()
+        batch = next(iter(dl))
+        if "labels" in batch:
+            labels0 = batch["labels"][0]
+            masked = int((labels0 == -100).sum().item())
+            total = int(labels0.numel())
+            print(f"labels tokens: {total}, masked: {masked}, unmasked: {total - masked}")
+            if total - masked == 0:
+                raise RuntimeError(
+                    "All labels are masked (-100). This usually causes loss=0. "
+                    "Your data/collator is producing no supervised tokens."
+                )
+        else:
+            print("WARNING: batch has no 'labels' key; trainer may be misconfigured.")
 
     print("Starting SFT training...")
     train_result = trainer.train()
