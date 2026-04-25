@@ -22,7 +22,7 @@ def verify_batch_has_anomaly(df, anomalies, is_trap, trap_type, new_columns):
         if df[col].dropna().astype(str).str.contains(r"^\s|\s$").any():
             return True
 
-    # Check for type mismatches (e.g., price as string with $)
+    # Check for type mismatches (e.g., price as string with $ or non-numeric text)
     if "price" in df.columns:
         try:
             pd.to_numeric(df["price"], errors="raise")
@@ -37,6 +37,15 @@ def verify_batch_has_anomaly(df, anomalies, is_trap, trap_type, new_columns):
     if "customer_id" in df.columns:
         if df["customer_id"].duplicated().sum() > len(df) * 0.5:
             return True
+
+    # Check for negative price values (domain-invalid)
+    if "price" in df.columns:
+        try:
+            numeric_price = pd.to_numeric(df["price"], errors="coerce")
+            if (numeric_price < 0).any():
+                return True
+        except Exception:
+            pass
 
     return False
 
@@ -70,8 +79,6 @@ def main():
     print("Sorting by order_date...")
     df = df.sort_values(by="order_date").reset_index(drop=True)
     
-    # Optional: downsample? Olist has ~110k, split into 30 is ~3600 per day.
-    
     # Create chunks
     print("Chunking data into 30 days...")
     indices = np.array_split(range(len(df)), 30)
@@ -85,9 +92,13 @@ def main():
         28: "null_nuke",
     }
     
+    # --- Gap-day corruption pool ---
+    # Each tuple: (col, op, severity_description)
+    # Pool now has 3 entries so all three corruptions can be selected
     _CORRUPTION_POOL = [
-        ("discount_amount", "fill_zero"),
-        ("customer_city", "strip")
+        ("discount_amount", "fill_null"),   # hits completeness / numeric_sanity
+        ("customer_city", "strip"),          # hits string_cleanliness
+        ("price", "negative"),               # hits numeric_sanity (domain-invalid floats)
     ]
     
     anomalies_map = {}
@@ -99,9 +110,8 @@ def main():
         chunk = chunks[i]
         n = len(chunk)
         
-        # Phase A: Synthesize discount_amount
+        # Phase A: Synthesize discount_amount (as numeric)
         chunk["discount_amount"] = np_rng.uniform(0, 0.2, n) * chunk["price"]
-        # Round it 
         chunk["discount_amount"] = chunk["discount_amount"].round(2)
         
         anomalies = []
@@ -111,33 +121,63 @@ def main():
         
         if is_trap:
             if trap_type == "type_trap":
-                # Day 8: price as string with "$"
-                chunk["price"] = chunk["price"].apply(lambda x: f"${x}")
-                anomalies = [("price", "strip"), ("price", "cast")]
-                
+                # --- Day 8: partial non-numeric strings so type_consistency drops to ~0.70 ---
+                # Strategy: mix "$123.45"-style with non-numeric tokens "N/A" and "ERR"
+                # so that the parseable_ratio on price falls to roughly 0.70.
+                # We inject ~30% corrupted values.
+                day_rng = random.Random(42 * 1000 + day)
+                corrupt_pct = 0.30  # 30% non-numeric → parseable_ratio ≈ 0.70
+                corrupt_count = int(n * corrupt_pct)
+                corrupt_indices = day_rng.sample(range(n), corrupt_count)
+                bad_tokens = ["N/A", "ERR", "--", "?", "n.a.", "#NUM!"]
+                # Keep remaining rows as proper dollar strings (no $ - just numeric text)
+                # so parseable_ratio for the other 70% stays numeric
+                chunk["price"] = chunk["price"].astype(str)  # ensure string dtype
+                for idx in corrupt_indices:
+                    chunk.at[idx, "price"] = day_rng.choice(bad_tokens)
+                anomalies = [("price", "type_mixed")]
+
             elif trap_type == "oom_trap":
-                # Day 14: clone customer_id massively
-                oom_key = rng.choice(chunk["customer_id"].tolist()[:5])
-                chunk["customer_id"] = oom_key
-                anomalies = [("customer_id", "deduplicate")]
-                
+                # --- Day 14: clone customer_id to 80% of rows + 30% nulls in order_id ---
+                # Defeats uniqueness AND completeness simultaneously.
+                day_rng = random.Random(42 * 1000 + day)
+                oom_key = chunk["customer_id"].dropna().iloc[0]
+                # Stamp oom_key on 80% of rows
+                oom_indices = day_rng.sample(range(n), int(n * 0.80))
+                chunk.loc[oom_indices, "customer_id"] = oom_key
+                # Also inject 30% nulls in order_id
+                null_order_count = int(n * 0.30)
+                null_order_indices = day_rng.sample(range(n), null_order_count)
+                chunk.loc[null_order_indices, "order_id"] = None
+                anomalies = [("customer_id", "deduplicate"), ("order_id", "quarantine")]
+
             elif trap_type == "schema_drift":
-                # Day 21: promo_code appears
-                chunk["promo_code"] = [f"PROMO{rng.randint(100, 999)}" if rng.random() > 0.3 else None for _ in range(n)]
+                # --- Day 21: new promo_code column with 40% nulls ---
+                # Hits both schema completeness and column_quality (low fill rate).
+                day_rng = random.Random(42 * 1000 + day)
+                promo_values = []
+                for _ in range(n):
+                    if day_rng.random() < 0.40:   # 40% null
+                        promo_values.append(None)
+                    else:
+                        promo_values.append(f"PROMO{day_rng.randint(100, 999)}")
+                chunk["promo_code"] = promo_values
                 new_columns = ["promo_code"]
                 anomalies = [("promo_code", "evolve")]
-                
+
             elif trap_type == "null_nuke":
-                # Day 28: 20% of customer_id are NULL
-                null_count = int(n * 0.20)
-                null_indices = rng.sample(range(n), null_count)
-                # chunk.loc can handle it
+                # --- Day 28: 50% customer_id nulls (raised from 20%) ---
+                # At 50%, completeness contribution drops ~0.90 → enough to fail 0.80 threshold
+                # combined with the base gap-day noise.
+                day_rng = random.Random(42 * 1000 + day)
+                null_count = int(n * 0.50)
+                null_indices = day_rng.sample(range(n), null_count)
                 chunk.loc[null_indices, "customer_id"] = None
                 anomalies = [("customer_id", "quarantine")]
                 
         else:
-            # Random Gap Day mutations
-            # We enforce exactly 1-2 corruptions from pool to ensure grader validation passes
+            # --- Random Gap Day mutations (raised severity) ---
+            # Select 1–2 corruptions from pool (now 3-entry pool)
             day_rng = random.Random(42 * 1000 + day)
             pool = list(_CORRUPTION_POOL)
             day_rng.shuffle(pool)
@@ -145,22 +185,40 @@ def main():
             anomalies = pool[:n_corruptions]
             
             for col, op in anomalies:
-                if op == "fill_zero" and col == "discount_amount":
-                    null_pct = day_rng.uniform(0.02, 0.05) # 2-5% rows to NULL
+                if op == "fill_null" and col == "discount_amount":
+                    # Raised: 15–30% null ratio (was 2–5%)
+                    null_pct = day_rng.uniform(0.15, 0.30)
                     null_count = int(n * null_pct)
                     null_indices = day_rng.sample(range(n), null_count)
                     chunk.loc[null_indices, col] = None
+
                 elif op == "strip" and col == "customer_city":
-                    ws_pct = day_rng.uniform(0.05, 0.10) # 5-10% trailing spaces
+                    # Raised: 30–50% whitespace ratio (was 5–10%)
+                    ws_pct = day_rng.uniform(0.30, 0.50)
                     ws_count = int(n * ws_pct)
                     ws_indices = day_rng.sample(range(n), ws_count)
-                    chunk.loc[ws_indices, col] = chunk.loc[ws_indices, col].apply(lambda x: f"  {x}  " if pd.notna(x) else x)
+                    chunk.loc[ws_indices, col] = chunk.loc[ws_indices, col].apply(
+                        lambda x: f"  {x}  " if pd.notna(x) else x
+                    )
+
+                elif op == "negative" and col == "price":
+                    # New: inject 10–20% of price values as negative floats
+                    # Valid floats but domain-invalid → hits numeric_sanity
+                    neg_pct = day_rng.uniform(0.10, 0.20)
+                    neg_count = int(n * neg_pct)
+                    neg_indices = day_rng.sample(range(n), neg_count)
+                    for idx in neg_indices:
+                        original = chunk.at[idx, "price"]
+                        try:
+                            chunk.at[idx, "price"] = -abs(float(original))
+                        except (ValueError, TypeError):
+                            chunk.at[idx, "price"] = -1.0
         
         anomalies_map[day] = anomalies
         
         # Verify
         if not verify_batch_has_anomaly(chunk, anomalies, is_trap, trap_type, new_columns):
-            print(f"WARNING: Day {day} raw data failed anomaly verification! Modifying...")
+            print(f"WARNING: Day {day} raw data failed anomaly verification! Forcing null...")
             if not is_trap:
                 # Force a null discount amount to make sure it trips grader
                 chunk.loc[0, "discount_amount"] = None
