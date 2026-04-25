@@ -32,8 +32,9 @@ _CAT_UNIQUE_THRESHOLD = 0.20
 _NON_NUMERIC_TOKENS = ["N/A", "ERR", "--", "?", "n.a.", "#NUM!"]
 
 
-def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
+def detect_column_roles(df: pd.DataFrame, primary_key: Optional[str] = None) -> dict[str, list[str]]:
     """Classify columns into roles based purely on data statistics.
+    Primary Key must be explicitly provided.
 
     Returns:
         dict with keys: 'numeric', 'date', 'id', 'categorical', 'string'
@@ -43,7 +44,14 @@ def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
         "numeric": [], "date": [], "id": [], "categorical": [], "string": [],
     }
     n = max(len(df), 1)
+    
+    if primary_key and primary_key in df.columns:
+        roles["id"].append(primary_key)
+
     for col in df.columns:
+        if primary_key and col == primary_key:
+            continue
+            
         series = df[col].dropna().astype(str)
         if len(series) == 0:
             continue
@@ -57,9 +65,7 @@ def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
             continue
         # String: check cardinality
         unique_ratio = df[col].nunique(dropna=True) / n
-        if unique_ratio >= _ID_UNIQUE_THRESHOLD:
-            roles["id"].append(col)
-        elif unique_ratio <= _CAT_UNIQUE_THRESHOLD:
+        if unique_ratio <= _CAT_UNIQUE_THRESHOLD:
             roles["categorical"].append(col)
         else:
             roles["string"].append(col)
@@ -86,7 +92,7 @@ def _verify_has_anomaly(df: pd.DataFrame, roles: dict, new_columns: list[str]) -
     """Role-based anomaly check — no hardcoded column names."""
     if df.isnull().any().any():
         return True
-    for col in df.select_dtypes(include=["object"]).columns:
+    for col in df.select_dtypes(include=["object", "string"]).columns:
         if df[col].dropna().astype(str).str.contains(r"^\s|\s$", regex=True).any():
             return True
     for col in roles.get("numeric", []):
@@ -349,15 +355,15 @@ class DayDataGenerator:
         "region":       "categorical",
     }
 
-    def __init__(self, episode_seed: int, n_rows: int = 100):
+    def __init__(self, episode_seed: int, n_rows: int = 100, primary_key: str = "row_id"):
         self.episode_seed = episode_seed
         self.n_rows = n_rows
         self._day_anomalies: Dict[int, List[Tuple[str, str]]] = {}
 
         # Build a sample day-1 frame to detect roles
         self._sample_df = self._build_base_data(seed=episode_seed, n=n_rows)
-        self._roles = detect_column_roles(self._sample_df)
-        self._pk_col, _ = _pick(self._roles, "id")
+        self._roles = detect_column_roles(self._sample_df, primary_key=primary_key)
+        self._pk_col = primary_key
         self._numeric_cols = list(self._roles.get("numeric", []))
         self._string_cols = list(self._roles.get("string", []) + self._roles.get("categorical", []))
         self._baseline_schema = list(self._sample_df.columns)
@@ -558,6 +564,7 @@ class OlistDayGenerator:
         n_rows: int = 100,
         data_dir: str = "data/olist",
         anomalies_file: str = "anomalies_map.json",
+        primary_key: str = "order_id",
     ):
         import json
         from pathlib import Path
@@ -575,8 +582,8 @@ class OlistDayGenerator:
 
         # Detect column roles from day 1 to avoid hardcoding
         day1_df = pd.read_csv(self.data_dir / "day_01.csv")
-        self._roles = detect_column_roles(day1_df)
-        self._pk_col, _ = _pick(self._roles, "id")
+        self._roles = detect_column_roles(day1_df, primary_key=primary_key)
+        self._pk_col = primary_key
         self._numeric_cols = list(self._roles.get("numeric", []))
         self._string_cols = list(
             self._roles.get("string", []) + self._roles.get("categorical", [])

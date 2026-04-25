@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-
+from typing import Optional
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -45,10 +45,11 @@ CAT_UNIQUE_THRESHOLD = 0.20         # fraction unique → treat as categorical
 # Column-role detection  (no column-name knowledge required)
 # ---------------------------------------------------------------------------
 
-def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
+def detect_column_roles(df: pd.DataFrame, primary_key: Optional[str] = None) -> dict[str, list[str]]:
     """
     Return a mapping of role → [column_names].
     Works on any DataFrame regardless of column names.
+    Primary key must be explicitly provided.
     """
     roles: dict[str, list[str]] = {
         "numeric": [],
@@ -59,7 +60,13 @@ def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
     }
     n = max(len(df), 1)
 
+    if primary_key and primary_key in df.columns:
+        roles["id"].append(primary_key)
+
     for col in df.columns:
+        if primary_key and col == primary_key:
+            continue
+            
         series = df[col].dropna().astype(str)
         if len(series) == 0:
             continue
@@ -78,9 +85,7 @@ def detect_column_roles(df: pd.DataFrame) -> dict[str, list[str]]:
 
         # --- string: check cardinality ---
         unique_ratio = df[col].nunique(dropna=True) / n
-        if unique_ratio >= ID_UNIQUE_THRESHOLD:
-            roles["id"].append(col)
-        elif unique_ratio <= CAT_UNIQUE_THRESHOLD:
+        if unique_ratio <= CAT_UNIQUE_THRESHOLD:
             roles["categorical"].append(col)
         else:
             roles["string"].append(col)
@@ -248,11 +253,45 @@ def verify_batch_has_anomaly(
 # ---------------------------------------------------------------------------
 
 def load_raw_dataframe() -> pd.DataFrame:
-    """Load and merge Olist CSVs into a single Bronze DataFrame."""
+    """Load and merge Olist CSVs into a single Bronze DataFrame.
+    If CSVs are missing, automatically generate synthetic datasets with the right schemas.
+    """
     print("Loading Olist datasets...")
-    df_items = pd.read_csv(DATASET_DIR / "olist_order_items_dataset.csv")
-    df_orders = pd.read_csv(DATASET_DIR / "olist_orders_dataset.csv")
-    df_customs = pd.read_csv(DATASET_DIR / "olist_customers_dataset.csv")
+    
+    items_path = DATASET_DIR / "olist_order_items_dataset.csv"
+    orders_path = DATASET_DIR / "olist_orders_dataset.csv"
+    customs_path = DATASET_DIR / "olist_customers_dataset.csv"
+    
+    if items_path.exists() and orders_path.exists() and customs_path.exists():
+        df_items = pd.read_csv(items_path)
+        df_orders = pd.read_csv(orders_path)
+        df_customs = pd.read_csv(customs_path)
+    else:
+        print("Kaggle CSVs not found in olist_dataset/. Auto-generating a 5,000-row synthetic substitute...")
+        DATASET_DIR.mkdir(parents=True, exist_ok=True)
+        # Create synthetic datasets
+        rng = np.random.default_rng(42)
+        n = 5000
+        customer_ids = [f"cust_{i}" for i in range(n)]
+        order_ids = [f"order_{i}" for i in range(n)]
+        
+        df_customs = pd.DataFrame({
+            "customer_id": customer_ids,
+            "customer_city": rng.choice(["sao paulo", "rio de janeiro", "curitiba"], n),
+            "customer_state": rng.choice(["SP", "RJ", "PR"], n),
+        })
+        df_orders = pd.DataFrame({
+            "order_id": order_ids,
+            "customer_id": customer_ids,
+            "order_purchase_timestamp": pd.date_range("2018-01-01", periods=n, freq="min").astype(str),
+        })
+        df_items = pd.DataFrame({
+            "order_id": order_ids,
+            "product_id": [f"prod_{rng.integers(1, 100)}" for _ in range(n)],
+            "seller_id": [f"seller_{rng.integers(1, 20)}" for _ in range(n)],
+            "price": rng.uniform(10.0, 500.0, n).round(2),
+            "freight_value": rng.uniform(5.0, 50.0, n).round(2),
+        })
 
     print("Merging DataFrames...")
     df = df_items.merge(df_orders, on="order_id", how="inner")
@@ -313,7 +352,7 @@ def main() -> None:
 
         # Synthesise a numeric column (discount) from existing numeric data
         # We pick the first numeric column dynamically and derive a discount from it.
-        pre_roles = detect_column_roles(chunk)
+        pre_roles = detect_column_roles(chunk, primary_key="order_id")
         base_numeric_col, _ = pick_col(pre_roles, "numeric")
         if base_numeric_col is not None:
             chunk["discount_amount"] = (
@@ -321,7 +360,7 @@ def main() -> None:
             ).round(2)
 
         # Re-detect roles AFTER adding discount_amount
-        roles = detect_column_roles(chunk)
+        roles = detect_column_roles(chunk, primary_key="order_id")
 
         anomalies: list = []
         is_trap = day in TRAP_DAYS

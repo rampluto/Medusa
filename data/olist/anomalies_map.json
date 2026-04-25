@@ -1,222 +1,242 @@
 {
   "1": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "2": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "3": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "4": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
+    ],
+    [
+      "price",
+      "negative"
     ]
   ],
   "5": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
+    ],
+    [
+      "price",
+      "fill_null"
     ]
   ],
   "6": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "7": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "8": [
     [
       "price",
-      "strip"
-    ],
-    [
-      "price",
-      "cast"
+      "type_mixed"
     ]
   ],
   "9": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
     ]
   ],
   "10": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ],
     [
-      "customer_city",
-      "strip"
+      "price",
+      "negative"
     ]
   ],
   "11": [
     [
-      "customer_city",
-      "strip"
+      "price",
+      "negative"
     ],
     [
-      "discount_amount",
-      "fill_zero"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "12": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "13": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ],
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ]
   ],
   "14": [
     [
-      "customer_id",
+      "order_id",
       "deduplicate"
+    ],
+    [
+      "price",
+      "quarantine"
     ]
   ],
   "15": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
     ]
   ],
   "16": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
+    ],
+    [
+      "price",
+      "fill_null"
     ]
   ],
   "17": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ],
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "18": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
     ]
   ],
   "19": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
+    ],
+    [
+      "price",
+      "negative"
     ]
   ],
   "20": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
+    ],
+    [
+      "price",
+      "negative"
     ]
   ],
   "21": [
     [
-      "promo_code",
+      "extra_feature",
       "evolve"
     ]
   ],
   "22": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "negative"
     ]
   ],
   "23": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ],
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ]
   ],
   "24": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ],
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "25": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ]
   ],
   "26": [
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ],
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "27": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ],
     [
-      "discount_amount",
-      "fill_zero"
+      "price",
+      "fill_null"
     ]
   ],
   "28": [
     [
-      "customer_id",
+      "order_id",
       "quarantine"
     ]
   ],
   "29": [
     [
-      "customer_city",
-      "strip"
+      "price",
+      "negative"
     ],
     [
-      "discount_amount",
-      "fill_zero"
+      "customer_id",
+      "whitespace"
     ]
   ],
   "30": [
     [
-      "customer_city",
-      "strip"
+      "customer_id",
+      "whitespace"
     ]
   ]
 }
