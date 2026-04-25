@@ -46,45 +46,56 @@ class RandomizedSchemaGenerator(DayDataGenerator):
         self._build_anomaly_schedule()
 
 
-def get_expert_action(env: MedusaEnv) -> MedusaAction:
-    """A perfect rule-based solver that reads the exact environment state."""
+def get_expert_action(env: MedusaEnv) -> tuple[str, MedusaAction]:
+    """A perfect rule-based solver that returns CoT reasoning and the exact action."""
     state = env.state
     
-    # 1. Evolve Schema if drift is detected
+    # 1. Check for error recovery first
+    recovery_prefix = ""
+    bad_keywords = ["BLOCK", "INVALID", "not found", "ERROR", "Penalty"]
+    if any(k in state.last_action_result for k in bad_keywords):
+        recovery_prefix = f"Wait, my previous action failed: {state.last_action_result.strip()} Let me correct my approach. "
+    
+    # 2. Evolve Schema if drift is detected
     if state.new_schema_cols and not state.did_evolve_schema:
-        return MedusaAction(action="EVOLVE_SILVER_SCHEMA", params={"column": state.new_schema_cols[0]})
+        reason = f"Schema drift detected: new columns {state.new_schema_cols}. I must evolve the silver schema to data contract spec before merging."
+        return recovery_prefix + reason, MedusaAction(action="EVOLVE_SILVER_SCHEMA", params={"column": state.new_schema_cols[0]})
         
-    # 2. Fix anomalies
+    # 3. Fix anomalies
     if state.unhandled_anomalies_today:
         col = list(state.unhandled_anomalies_today.keys())[0]
         ops = state.unhandled_anomalies_today[col]
         op = ops[0]
         
+        reason = f"I see an unhandled anomaly on column '{col}'. It requires a '{op}' operation."
         if op == "quarantine":
-            return MedusaAction(action="QUARANTINE_ROWS", params={"table": "bronze", "condition": f"{col} IS NULL"})
+            return recovery_prefix + reason, MedusaAction(action="QUARANTINE_ROWS", params={"table": "bronze", "condition": f"{col} IS NULL"})
         elif op == "evolve":
-            return MedusaAction(action="EVOLVE_SILVER_SCHEMA", params={"column": col})
+            return recovery_prefix + reason, MedusaAction(action="EVOLVE_SILVER_SCHEMA", params={"column": col})
         elif op == "deduplicate":
-            return MedusaAction(action="DEDUPLICATE", params={"key": col})
+            return recovery_prefix + reason, MedusaAction(action="DEDUPLICATE", params={"key": col})
         elif op == "type_mixed":
-            return MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "cast"})
+            return recovery_prefix + reason, MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "cast"})
         elif op == "fill_null":
-            return MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "fill_zero"})
+            return recovery_prefix + reason, MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "fill_zero"})
         elif op == "whitespace":
-            return MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "strip"})
+            return recovery_prefix + reason, MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": "strip"})
         else:
-            return MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": op})
+            return recovery_prefix + reason, MedusaAction(action="CLEAN_COLUMN", params={"col": col, "op": op})
             
-    # 3. Deduplicate
+    # 4. Deduplicate
     if not state.did_dedup_today:
-        return MedusaAction(action="DEDUPLICATE", params={})
+        reason = "All initial anomalies are handled, but I have not deduplicated the batch yet. Must deduplicate."
+        return recovery_prefix + reason, MedusaAction(action="DEDUPLICATE", params={})
         
-    # 4. Merge
+    # 5. Merge
     if not state.did_merge_today:
-        return MedusaAction(action="EXECUTE_MERGE", params={})
+        reason = "The batch is cleaned and deduplicated. Ready to merge into Silver."
+        return recovery_prefix + reason, MedusaAction(action="EXECUTE_MERGE", params={})
         
-    # 5. Commit
-    return MedusaAction(action="COMMIT_DAY", params={})
+    # 6. Commit
+    reason = "Merge executed successfully. Committing the day."
+    return recovery_prefix + reason, MedusaAction(action="COMMIT_DAY", params={})
 
 
 def main():
@@ -106,16 +117,29 @@ def main():
             obs = env.reset()
             
             while not obs.done:
-                # 1. Get LLM Prompt from MEDUSA translation
+                # 1. Get LLM Prompt
                 prompt = env.generate_llm_prompt()
                 
-                # 2. Ask expert solver what to do
-                action = get_expert_action(env)
+                # 2. Get Expert Action
+                reasoning, action = get_expert_action(env)
                 
-                # Format to JSON string (which LLM should output)
-                action_text = json.dumps({"action": action.action, "params": action.params})
+                # 10% chance to intentionally screw up to teach Error-Recovery
+                # Only if we aren't ALREADY recovering from a mistake, to prevent crash chains
+                bad_keywords = ["BLOCK", "INVALID", "not found", "ERROR", "Penalty"]
+                is_recovering = any(k in env.state.last_action_result for k in bad_keywords)
                 
-                # 3. Log the turn in ChatML format
+                if random.random() < 0.10 and not is_recovering:
+                    reasoning = "I will attempt this syntax blindly."
+                    bad_actions = [
+                        MedusaAction(action="WRONG_SYNTAX_ACTION", params={"col": "fake"}),
+                        MedusaAction(action="CLEAN_COLUMN", params={"col": "hallucinated_col", "op": "cast"}),
+                        MedusaAction(action="EXECUTE_MERGE", params={}) # If called before dedup, it will block
+                    ]
+                    action = random.choice(bad_actions)
+                
+                # 3. Format Target: <think> blocks + JSON
+                action_text = f"<think>\n{reasoning}\n</think>\n" + json.dumps({"action": action.action, "params": action.params})
+                
                 chatml = {
                     "messages": [
                         {"role": "system", "content": "You are a perfect Autonomous Data Engineer Agent solving the Medusa environment pipelines."},
