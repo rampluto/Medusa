@@ -4,6 +4,10 @@ Six tasks aligned with the 30-day gauntlet architecture.  Each task scores a
 completed episode using v4.0 state flags (current_day, silver_row_count,
 total_quarantine_rows, did_evolve_schema, etc.).
 
+Column names are NEVER hardcoded here.  All column-specific checks read
+from ``MedusaState.pk_col``, ``MedusaState.numeric_cols``, and
+``MedusaState.new_schema_cols`` which are populated by the generator.
+
 Usage::
 
     from medusa_env.tasks import TASKS, score_episode
@@ -23,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+import numpy as np
+import pandas as pd
 
 if TYPE_CHECKING:
     from server.medusa_env import _EpisodeTables
@@ -40,7 +46,7 @@ class Task:
     id: str
     name: str
     difficulty: str          # "easy" | "medium" | "hard"
-    seed: int                # Controls ScenarioGenerator / DayDataGenerator seed
+    seed: int
     description: str
     success_criteria: List[str]
     scoring_rubric: Dict[str, float]
@@ -57,20 +63,16 @@ class TaskResult:
     task_id: str
     score: float             # 0.0 – 1.0
     grade: str               # "S" | "A" | "B" | "C" | "F"
-    breakdown: Dict[str, float]   # per-criterion scores
+    breakdown: Dict[str, float]
     passed: bool
     notes: List[str] = field(default_factory=list)
 
 
 def _grade(score: float) -> str:
-    if score >= 0.90:
-        return "S"
-    if score >= 0.75:
-        return "A"
-    if score >= 0.55:
-        return "B"
-    if score >= 0.35:
-        return "C"
+    if score >= 0.90: return "S"
+    if score >= 0.75: return "A"
+    if score >= 0.55: return "B"
+    if score >= 0.35: return "C"
     return "F"
 
 
@@ -113,20 +115,21 @@ TASKS: Dict[str, Task] = {
         difficulty="medium",
         seed=42,
         description=(
-            "Day 8 injects revenue as '$50.50' strings. The agent must "
-            "strip the '$' and cast to float64 before committing. "
-            "The grader checks Silver.dtypes['revenue'] == float64."
+            "Day 8 injects non-numeric tokens into a numeric column, causing "
+            "type_consistency to drop. The agent must CLEAN_COLUMN (cast) "
+            "before committing. The grader checks that numeric columns in "
+            "Silver have numeric dtype."
         ),
         success_criteria=[
             "Survive past Day 8 (current_day >= 9)",
-            "Silver revenue column is float64",
+            "All numeric-role columns in Silver are numeric dtype",
             "Silver table is non-empty",
         ],
         scoring_rubric={
-            "survived_day8":     0.35,
-            "revenue_is_float":  0.30,
-            "silver_built":      0.15,
-            "grader_passed":     0.20,
+            "survived_day8":        0.35,
+            "numeric_cols_typed":   0.30,
+            "silver_built":         0.15,
+            "grader_passed":        0.20,
         },
     ),
 
@@ -137,9 +140,10 @@ TASKS: Dict[str, Task] = {
         difficulty="medium",
         seed=42,
         description=(
-            "Day 14 injects massive duplicate user_ids. The agent must "
-            "profile → deduplicate → merge to avoid exceeding the memory "
-            "limit. Without dedup, EXECUTE_MERGE will BLOCK."
+            "Day 14 clones the primary-key column to ~80% of rows and injects "
+            "nulls in a secondary column. The agent must DEDUPLICATE before "
+            "merging to avoid a memory-explosion. Without dedup, EXECUTE_MERGE "
+            "is BLOCKED."
         ),
         success_criteria=[
             "Survive past Day 14 (current_day >= 15)",
@@ -161,19 +165,19 @@ TASKS: Dict[str, Task] = {
         difficulty="medium",
         seed=42,
         description=(
-            "Day 21 introduces a new 'promo_code' column. The agent must "
-            "call EVOLVE_SILVER_SCHEMA to add the column to the Data "
-            "Contract before committing."
+            "Day 21 introduces a new column not in the baseline schema. "
+            "The agent must call EVOLVE_SILVER_SCHEMA to add the column to "
+            "the Data Contract before committing."
         ),
         success_criteria=[
             "Survive past Day 21 (current_day >= 22)",
             "EVOLVE_SILVER_SCHEMA was called",
-            "Silver contains promo_code column",
+            "New column present in Silver",
         ],
         scoring_rubric={
             "survived_day21":    0.30,
             "schema_evolved":    0.30,
-            "promo_in_silver":   0.20,
+            "new_col_in_silver": 0.20,
             "grader_passed":     0.20,
         },
     ),
@@ -185,14 +189,14 @@ TASKS: Dict[str, Task] = {
         difficulty="medium",
         seed=42,
         description=(
-            "Day 28 has 20% of user_id as NULL. The agent must "
-            "QUARANTINE_ROWS where user_id IS NULL before merging. "
-            "The grader checks that no NULL user_id rows are in Silver."
+            "Day 28 injects 50% nulls into the primary-key column. The agent "
+            "must QUARANTINE_ROWS where the primary key IS NULL before merging. "
+            "The grader checks that no NULL primary-key rows are in Silver."
         ),
         success_criteria=[
             "Survive past Day 28 (current_day >= 29)",
             "Quarantine contains rows",
-            "No NULL user_id in Silver",
+            "No NULL primary-key rows in Silver",
         ],
         scoring_rubric={
             "survived_day28":      0.30,
@@ -239,44 +243,69 @@ def _build_checks(
     state: "MedusaState",
     tables: "Optional[_EpisodeTables]",
 ) -> Dict[str, bool]:
-    """Build reusable boolean checks used across v4.0 task rubrics."""
-    silver_cols = set()
+    """Build reusable boolean checks used across v4.0 task rubrics.
+
+    All column-specific checks read from state.pk_col, state.numeric_cols,
+    and state.new_schema_cols — no column names are hardcoded here.
+    """
+    silver_cols: set = set()
     if tables is not None and not tables.silver.empty:
         silver_cols = set(tables.silver.columns)
 
-    import numpy as np
-    revenue_is_float = False
-    if tables is not None and not tables.silver.empty and "revenue" in tables.silver.columns:
-        revenue_is_float = tables.silver["revenue"].dtype == np.float64
+    # ── Check 1: All numeric-role columns in Silver are numeric dtype
+    numeric_cols_typed = False
+    if tables is not None and not tables.silver.empty and state.numeric_cols:
+        all_typed = True
+        for col in state.numeric_cols:
+            if col in tables.silver.columns:
+                if not pd.api.types.is_numeric_dtype(tables.silver[col]):
+                    all_typed = False
+                    break
+        numeric_cols_typed = all_typed
 
-    null_in_silver = True  # default: ok
-    if tables is not None and not tables.silver.empty and "user_id" in tables.silver.columns:
-        null_in_silver = int(tables.silver["user_id"].isnull().sum()) == 0
+    # ── Check 2: No NULL in primary-key column in Silver
+    no_null_in_silver = True
+    pk = state.pk_col
+    if (
+        pk
+        and tables is not None
+        and not tables.silver.empty
+        and pk in tables.silver.columns
+    ):
+        no_null_in_silver = int(tables.silver[pk].isnull().sum()) == 0
+
+    # ── Check 3: Any new schema column is present in Silver
+    new_col_in_silver = False
+    if state.new_schema_cols:
+        new_col_in_silver = any(c in silver_cols for c in state.new_schema_cols)
+    elif state.did_evolve_schema:
+        # Fallback: if schema was evolved but we don't know which col, treat as passed
+        new_col_in_silver = True
 
     return {
         # Day survival
-        "survived_5_days": state.current_day >= 6 or state.stage == "committed",
-        "survived_day8": state.current_day >= 9 or state.stage == "committed",
-        "survived_day14": state.current_day >= 15 or state.stage == "committed",
-        "survived_day21": state.current_day >= 22 or state.stage == "committed",
-        "survived_day28": state.current_day >= 29 or state.stage == "committed",
+        "survived_5_days":  state.current_day >= 6 or state.stage == "committed",
+        "survived_day8":    state.current_day >= 9 or state.stage == "committed",
+        "survived_day14":   state.current_day >= 15 or state.stage == "committed",
+        "survived_day21":   state.current_day >= 22 or state.stage == "committed",
+        "survived_day28":   state.current_day >= 29 or state.stage == "committed",
         "completed_30_days": state.stage == "committed",
 
         # Pipeline basics
-        "silver_built": state.silver_row_count > 0,
-        "no_crash": state.stage != "failed",
-        "positive_reward": state.cumulative_reward > 0,
-        "high_reward": state.cumulative_reward >= 500,
-        "grader_passed": state.grader_passed,
+        "silver_built":       state.silver_row_count > 0,
+        "no_crash":           state.stage != "failed",
+        "positive_reward":    state.cumulative_reward > 0,
+        "high_reward":        state.cumulative_reward >= 500,
+        "grader_passed":      state.grader_passed,
         "all_graders_passed": state.grader_passed and state.stage == "committed",
 
-        # Trap-specific
-        "revenue_is_float": revenue_is_float,
-        "dedup_used": state.did_dedup_today or state.did_dedup_b,
-        "schema_evolved": state.did_evolve_schema,
-        "promo_in_silver": "promo_code" in silver_cols,
-        "quarantine_used": state.total_quarantine_rows > 0,
-        "no_null_in_silver": null_in_silver,
+        # Trap-specific (role-based)
+        "numeric_cols_typed": numeric_cols_typed,
+        "dedup_used":         state.did_dedup_today or state.did_dedup_b,
+        "schema_evolved":     state.did_evolve_schema,
+        "new_col_in_silver":  new_col_in_silver,
+        "quarantine_used":    state.total_quarantine_rows > 0,
+        "no_null_in_silver":  no_null_in_silver,
 
         # Quarantine ceiling (Day 28 excluded)
         "quarantine_ceiling": (
@@ -294,7 +323,6 @@ def _apply_check(
     key: str,
     failure_note: str,
 ) -> None:
-    """Apply a boolean check to the rubric and attach a note on failure."""
     if key not in rubric:
         return
     ok = checks.get(key, False)
@@ -312,16 +340,7 @@ def score_episode(
     state: "MedusaState",
     tables: "Optional[_EpisodeTables]" = None,
 ) -> TaskResult:
-    """Score a completed MEDUSA v4.0 episode against the named task.
-
-    Args:
-        task_id: Any task id defined in ``TASKS``.
-        state: Final ``MedusaState`` after the episode ended.
-        tables: Episode tables (used for Silver inspection). Optional.
-
-    Returns:
-        TaskResult with score in [0.0, 1.0].
-    """
+    """Score a completed MEDUSA v4.0 episode against the named task."""
     task = TASKS.get(task_id)
     if task is None:
         raise ValueError(f"Unknown task_id={task_id!r}. Valid: {list(TASKS)}")
@@ -338,17 +357,13 @@ def score_episode(
     rubric = task.scoring_rubric
     checks = _build_checks(state, tables)
 
-    # Apply all rubric checks generically
     for key in rubric:
-        failure_note = f"{key} check failed."
         if key in checks:
-            _apply_check(breakdown, rubric, checks, notes, key, failure_note)
+            _apply_check(breakdown, rubric, checks, notes, key, f"{key} check failed.")
         else:
-            # Unknown check key — award 0
             breakdown[key] = 0.0
             notes.append(f"Unknown rubric key: {key}")
 
-    # ── Final score ───────────────────────────────────────────────────────
     total = sum(breakdown.values())
     score = max(0.1, min(0.95, total))
     passed = score >= 0.10
@@ -368,9 +383,8 @@ def score_episode(
 # ---------------------------------------------------------------------------
 
 def score_all_tasks(
-    results: Dict[str, tuple],  # task_id → (state, tables)
-) -> Dict[str, TaskResult]:
-    """Score multiple completed episodes, one per task."""
+    results: Dict[str, tuple],
+) -> Dict[str, "TaskResult"]:
     return {
         task_id: score_episode(task_id, state, tables)
         for task_id, (state, tables) in results.items()

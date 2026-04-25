@@ -184,7 +184,9 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         self._day_gen_instance = day_generator
         self._day_gen: Optional[Any] = None
         self._current_batch: Optional[DayBatch] = None
-        self._primary_key = getattr(self._day_gen_instance, "PRIMARY_KEY", "user_id") if self._day_gen_instance else "user_id"
+        # _primary_key is derived from the generator's detected pk_col at runtime
+        # (populated into state by _load_day_batch). No column name is hardcoded.
+        self._primary_key: str = getattr(self._day_gen_instance, "pk_col", "") or ""
 
     def _generate_day_anomalies(self, seed: int) -> Dict[int, List[tuple]]:
         """Generate the deterministic anomaly checklist for all 30 days."""
@@ -205,6 +207,23 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         self._tables.daily_cleaned = batch.raw_data.copy()
         self._state.source_row_count = len(batch.raw_data)
         self._state.total_raw_rows += len(batch.raw_data)
+
+        # Propagate role metadata from the batch into state so grader / task
+        # scorer can operate generically without knowing any column names.
+        if batch.pk_col:
+            self._state.pk_col = batch.pk_col
+        if batch.numeric_cols:
+            self._state.numeric_cols = list(batch.numeric_cols)
+        if batch.string_cols:
+            self._state.string_cols = list(batch.string_cols)
+        if batch.baseline_schema and not self._state.baseline_schema:
+            self._state.baseline_schema = list(batch.baseline_schema)
+        if batch.new_columns:
+            # Accumulate new schema cols so task scorer can check them
+            existing = set(self._state.new_schema_cols)
+            for col in batch.new_columns:
+                if col not in existing:
+                    self._state.new_schema_cols.append(col)
 
     # ------------------------------------------------------------------
     # Metadata
@@ -300,10 +319,16 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         # Generate anomaly checklist + day data generator
         day_anomalies = self._generate_day_anomalies(effective_seed)
 
-        # Initialize schema contract from v4.0 daily batch base columns
-        # (the generator defines the canonical column set)
-        generator_class = self._day_gen.__class__ if self._day_gen else DayDataGenerator
-        contract_cols = list(generator_class.BASE_COLUMNS)
+        # Initialize schema contract from the generator's actual day-1 schema.
+        # BASE_COLUMNS is no longer a class constant — columns are detected at runtime.
+        if self._day_gen is not None:
+            try:
+                day1_batch = self._day_gen.generate_day(1)
+                contract_cols = list(day1_batch.raw_data.columns)
+            except Exception:
+                contract_cols = []
+        else:
+            contract_cols = []
 
         self._state = MedusaState(
             run_id=run_id,
@@ -893,6 +918,8 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             current_day=self._state.current_day,
             contract_columns=self._state.current_contract_columns,
             merged_today=self._state.did_merge_today,
+            pk_col=self._state.pk_col,
+            numeric_cols=self._state.numeric_cols,
         )
         grader_passed = grader_result.passed
         grader_report = grader_result.report
@@ -929,7 +956,7 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
                 self._state.stage = "committed"
 
                 # Day 30 Completion Quarantine ceiling
-                # Exclude Day 28 approved quarantine (null user_id) per plan §5
+                # Exclude Day 28 approved quarantine (null primary-key rows) per plan §5
                 tot_quar = self._state.total_quarantine_rows
                 day28_approved = self._state.day28_quarantine_rows
                 adjusted_quar = tot_quar - day28_approved
@@ -1159,6 +1186,8 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
                     silver_at_day_start=0,  # legacy: no day-start tracking
                     current_day=1,
                     contract_columns=list(self._tables.silver.columns) if not self._tables.silver.empty else [],
+                    pk_col=self._state.pk_col,
+                    numeric_cols=self._state.numeric_cols,
                 )
                 # Legacy compat: the old grader had .passed, .report, .bonus_reward
                 grader_result.bonus_reward = 15.0 if grader_result.passed else -20.0

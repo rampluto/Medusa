@@ -99,6 +99,15 @@ class MedusaState(State):
     # --- Schema evolution ---
     did_evolve_schema: bool = False
 
+    # --- Column role metadata (set by generator/env, consumed by grader + task scorer) ---
+    # These are populated at episode start and updated on schema drift — no column names
+    # are hardcoded anywhere else; everything reads these fields instead.
+    pk_col: str = ""                          # detected primary-key column
+    numeric_cols: List[str] = Field(default_factory=list)  # detected numeric columns
+    string_cols: List[str] = Field(default_factory=list)   # detected string/categorical columns
+    baseline_schema: List[str] = Field(default_factory=list)  # columns present on Day 1
+    new_schema_cols: List[str] = Field(default_factory=list)  # columns added by schema drift
+
     # --- Silver / Quarantine ---
     silver_row_count: int = 0
     quarantine_row_count: int = 0
