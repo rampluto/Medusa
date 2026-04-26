@@ -57,6 +57,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--logging-steps", type=int, default=10)
     parser.add_argument("--save-steps", type=int, default=200)
     parser.add_argument(
+        "--eval-ratio",
+        type=float,
+        default=0.02,
+        help="Fraction of samples to hold out for validation (0 disables eval).",
+    )
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=50,
+        help="Run evaluation every N steps (requires --eval-ratio > 0).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for dataset splitting / reproducibility.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help=(
@@ -120,6 +138,29 @@ def main() -> None:
     print("Formatting chat samples...")
     ds = ds.map(lambda row: build_text(row, tokenizer), remove_columns=ds.column_names)
 
+    # ----
+    # Train/validation split (optional)
+    # ----
+    eval_dataset = None
+    if args.eval_ratio and args.eval_ratio > 0:
+        # Ensure ratio is sane
+        if not (0.0 < args.eval_ratio < 1.0):
+            raise ValueError("--eval-ratio must be in (0,1) or 0 to disable.")
+
+        # `train_test_split` shuffles by default.
+        split = ds.train_test_split(test_size=args.eval_ratio, seed=args.seed)
+        train_ds = split["train"]
+        eval_dataset = split["test"]
+        print(
+            "Dataset split:",
+            f"train={len(train_ds)}",
+            f"eval={len(eval_dataset)}",
+            f"eval_ratio={args.eval_ratio}",
+        )
+    else:
+        train_ds = ds
+        print(f"Dataset: train={len(train_ds)} (eval disabled)")
+
     peft_config = LoraConfig(
         r=16,
         lora_alpha=32,
@@ -150,6 +191,11 @@ def main() -> None:
         dataset_text_field="text",
         max_seq_length=args.max_seq_len,
         packing=False,
+        seed=args.seed,
+        evaluation_strategy=(
+            "steps" if (eval_dataset is not None and args.eval_steps > 0) else "no"
+        ),
+        eval_steps=args.eval_steps,
     )
 
     # Keep compatibility across TRL versions.
@@ -165,7 +211,8 @@ def main() -> None:
             trainer = SFTTrainer(
                 model=model,
                 args=sft_config,
-                train_dataset=ds,
+                train_dataset=train_ds,
+                eval_dataset=eval_dataset,
                 peft_config=peft_config,
                 **variant,
             )
@@ -218,6 +265,11 @@ def main() -> None:
     print("Starting SFT training...")
     train_result = trainer.train()
     print(train_result)
+
+    if eval_dataset is not None:
+        print("Final evaluation...")
+        metrics = trainer.evaluate()
+        print(metrics)
 
     print("Saving final checkpoint...")
     trainer.save_model(args.output_dir)

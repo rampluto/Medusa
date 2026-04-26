@@ -18,9 +18,9 @@ import inspect
 import json
 import os
 import random
+import warnings
 import re
 import sys
-import warnings
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -40,6 +40,12 @@ VALID_ACTIONS = {
     "COMMIT_DAY",
 }
 
+warnings.filterwarnings(
+    "ignore",
+    message=r"The attention mask API under `transformers\.modeling_attn_mask_utils`.*",
+    category=FutureWarning,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -50,9 +56,9 @@ def import_unsloth_first():
     """Import Unsloth before Transformers and print a useful Kaggle fix if broken."""
 
     try:
-        import unsloth  # noqa: F401
+        import unsloth
         from unsloth import FastLanguageModel, PatchFastRL
-    except Exception as exc:  # noqa: BLE001 - package import errors are often nested.
+    except Exception as exc:
         message = str(exc)
         repair = (
             "Unsloth failed to import before training started.\n\n"
@@ -82,12 +88,11 @@ from models import MedusaAction
 from scenarios import DayDataGenerator, detect_column_roles
 from server.medusa_env import MedusaEnv
 
-
-warnings.filterwarnings(
-    "ignore",
-    message=r"The attention mask API under `transformers\.modeling_attn_mask_utils`.*",
-    category=FutureWarning,
-)
+# IMPORTANT: avoid MKL/libgomp crashes in some container environments.
+# (matches the fix used in train_sft.py)
+os.environ.setdefault("MKL_THREADING_LAYER", "GNU")
+os.environ.setdefault("MKL_SERVICE_FORCE_INTEL", "1")
+os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 
 class RandomizedSchemaGenerator(DayDataGenerator):
@@ -349,6 +354,8 @@ def load_unsloth_model(args: argparse.Namespace):
     except Exception as exc:  # noqa: BLE001 - older Unsloth builds may patch automatically.
         tqdm.write(f"[warn] PatchFastRL skipped: {exc}")
 
+    # Note: `model_name` is the *base model* used by Unsloth.
+    # If you want true SFT -> GRPO continuation, ensure SFT used the same base.
     model_kwargs = {
         "model_name": args.model_name,
         "max_seq_length": args.max_seq_length,
@@ -365,22 +372,31 @@ def load_unsloth_model(args: argparse.Namespace):
         model.generation_config.max_length = None
         model.generation_config.max_new_tokens = args.max_completion_length
 
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r=args.lora_rank,
-        target_modules=[
-            "q_proj",
-            "k_proj",
-            "v_proj",
-            "o_proj",
-            "gate_proj",
-            "up_proj",
-            "down_proj",
-        ],
-        lora_alpha=args.lora_rank,
-        use_gradient_checkpointing="unsloth",
-        random_state=args.seed,
-    )
+    # If resuming from an SFT adapter, we will load it later (in main),
+    # because it may come from Hub or disk.
+    if not args.sft_adapter:
+        # Default LoRA targets should match train_sft.py for compatibility.
+        # You can opt-in to extended MLP targets via --lora-extended-targets.
+        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+        if args.lora_extended_targets:
+            target_modules = [
+                "q_proj",
+                "k_proj",
+                "v_proj",
+                "o_proj",
+                "gate_proj",
+                "up_proj",
+                "down_proj",
+            ]
+
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r=args.lora_rank,
+            target_modules=target_modules,
+            lora_alpha=args.lora_rank,
+            use_gradient_checkpointing="unsloth",
+            random_state=args.seed,
+        )
     return model, tokenizer
 
 
@@ -388,6 +404,24 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MedusaEnv with GRPO via Unsloth + TRL.")
     parser.add_argument("--model-name", default="unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit")
     parser.add_argument("--output-dir", default="trainer/medusa-grpo-output")
+    parser.add_argument(
+        "--sft-adapter",
+        default="",
+        help=(
+            "Optional PEFT/LoRA adapter path or Hub repo id produced by train_sft.py. "
+            "If set, GRPO will resume from this adapter (continuation training)."
+        ),
+    )
+    parser.add_argument(
+        "--push-to-hub",
+        action="store_true",
+        help="Push final adapter/tokenizer to the Hugging Face Hub.",
+    )
+    parser.add_argument(
+        "--hub-model-id",
+        default="",
+        help="Target repo id for pushing GRPO adapter (e.g. user/medusa-qwen-grpo).",
+    )
     parser.add_argument("--episodes", type=int, default=8)
     parser.add_argument("--dataset-size", type=int, default=512)
     parser.add_argument("--rows-per-day", type=int, default=50)
@@ -403,6 +437,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=5e-6)
     parser.add_argument("--lora-rank", type=int, default=16)
+    parser.add_argument(
+        "--lora-extended-targets",
+        action="store_true",
+        help=(
+            "Include MLP projections (gate/up/down) in LoRA targets. "
+            "Do NOT enable when resuming from an SFT adapter unless SFT used the same targets."
+        ),
+    )
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.55)
     parser.add_argument("--env-reward-scale", type=float, default=20.0)
     parser.add_argument("--invalid-action-reward", type=float, default=-1.0)
@@ -425,6 +467,13 @@ def main() -> None:
     args = parse_args()
     os.environ.setdefault("WANDB_DISABLED", "true")
     os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+    # Normalize empty strings.
+    args.sft_adapter = args.sft_adapter.strip()
+    args.hub_model_id = args.hub_model_id.strip()
+    if args.push_to_hub and not args.hub_model_id:
+        raise SystemExit("--push-to-hub requires --hub-model-id")
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -435,6 +484,27 @@ def main() -> None:
     tqdm.write("[setup] loading Unsloth model")
     model, tokenizer = load_unsloth_model(args)
 
+    # ----
+    # Resume from SFT adapter if provided.
+    # This is the key to SFT -> GRPO continuation.
+    # ----
+    if args.sft_adapter:
+        tqdm.write(f"[setup] loading SFT adapter: {args.sft_adapter}")
+        try:
+            from peft import PeftModel
+
+            model = PeftModel.from_pretrained(model, args.sft_adapter, is_trainable=True)
+            if not hasattr(model, "warnings_issued"):
+                model.warnings_issued = {}
+        except Exception as exc:  # noqa: BLE001
+            raise SystemExit(
+                "Failed to load --sft-adapter. Common causes:\n"
+                "- SFT and GRPO base models differ (must match).\n"
+                "- SFT LoRA target_modules differ from GRPO model architecture.\n"
+                "- Adapter repo/path is incorrect.\n\n"
+                f"Underlying error: {exc}"
+            ) from exc
+
     from trl import GRPOConfig, GRPOTrainer
 
     config_values = {
@@ -443,7 +513,7 @@ def main() -> None:
         "adam_beta1": 0.9,
         "adam_beta2": 0.99,
         "weight_decay": 0.1,
-        "warmup_ratio": 0.05,
+        "warmup_steps": 0.05,
         "lr_scheduler_type": "cosine",
         "optim": "paged_adamw_8bit",
         "logging_steps": args.logging_steps,
@@ -475,6 +545,23 @@ def main() -> None:
     tqdm.write("[save] saving LoRA adapter")
     model.save_pretrained(output_dir / "lora_adapter")
     tokenizer.save_pretrained(output_dir / "lora_adapter")
+
+    if args.push_to_hub:
+        tqdm.write(f"[hub] pushing adapter to {args.hub_model_id}")
+        # Push the adapter folder (PEFT format) like train_sft.py.
+        try:
+            from huggingface_hub import HfApi
+
+            api = HfApi()
+            api.create_repo(args.hub_model_id, repo_type="model", exist_ok=True)
+            api.upload_folder(
+                repo_id=args.hub_model_id,
+                repo_type="model",
+                folder_path=str(output_dir / "lora_adapter"),
+                path_in_repo=".",
+            )
+        except Exception as exc:  # noqa: BLE001
+            tqdm.write(f"[warn] push_to_hub failed: {exc}")
     tqdm.write(f"[done] saved to {output_dir}")
 
 
