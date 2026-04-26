@@ -1,0 +1,87 @@
+# Reference Dockerfile for an HF Space that hosts the GRPO-trained agent
+# via `trainer.grpo_predictor_hub:predict`.
+#
+# This file is INTENTIONALLY a sibling, not a replacement, of the existing
+# repo-root `Dockerfile`. HF Spaces only honour a `Dockerfile` at the repo
+# root, so to deploy with this image you have two choices:
+#
+#   1. Hand-merge the diff below into the root `Dockerfile`. The deltas
+#      vs. the existing image are:
+#        - GPU-aware base image (CUDA 12.1 + cuDNN 8 runtime).
+#        - Extra wheels: torch, transformers, peft, accelerate,
+#          bitsandbytes, sentencepiece, huggingface_hub.
+#        - Default values for the env vars consumed by the predictor.
+#      Everything else (PORT=7860, PYTHONPATH, healthcheck, CMD) stays.
+#
+#   2. Stand up a separate Space that points at this file by renaming it
+#      to `Dockerfile` in a deploy branch.
+#
+# The HF Space MUST have GPU hardware enabled (T4 small is enough for
+# Qwen2.5-3B + LoRA in 4-bit; A10G-small for bf16 merged) — Settings →
+# Hardware → choose a GPU SKU.
+
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN ln -sf /usr/bin/python3.11 /usr/bin/python && \
+    ln -sf /usr/bin/python3.11 /usr/bin/python3 && \
+    python -m pip install --upgrade pip uv
+
+WORKDIR /app
+COPY . /app/env
+WORKDIR /app/env
+
+# Server stack (mirrors repo-root Dockerfile).
+RUN uv pip install --system --no-cache \
+        "openenv-core[core]>=0.2.2" \
+        fastapi \
+        "uvicorn[standard]" \
+        pydantic \
+        pandas \
+        numpy \
+        websockets
+
+# GRPO Hub predictor stack.
+# (`torch` first so the bnb / peft installs don't pin a different CUDA build.)
+RUN uv pip install --system --no-cache \
+        "torch==2.4.*" --index-url https://download.pytorch.org/whl/cu121
+RUN uv pip install --system --no-cache \
+        "transformers>=4.45,<5" \
+        "peft>=0.12" \
+        "accelerate>=0.34" \
+        "bitsandbytes>=0.43" \
+        "sentencepiece>=0.2" \
+        "huggingface_hub>=0.25"
+
+RUN uv pip install --system --no-cache -e .
+
+ENV PORT=7860 \
+    PYTHONPATH="/app/env:${PYTHONPATH}" \
+    ENABLE_WEB_INTERFACE=true \
+    \
+    # Wire the GRPO agent. `MEDUSA_GRPO_PREDICTOR` is the only one that
+    # MUST be set; the rest can be overridden in the Space's
+    # "Variables and secrets" panel without rebuilding the image.
+    MEDUSA_GRPO_PREDICTOR="trainer.grpo_predictor_hub:predict" \
+    BASE_MODEL_ID="Qwen/Qwen2.5-3B-Instruct" \
+    # GRPO_MODEL_ID is INTENTIONALLY unset here — set it as a Space
+    # Variable (e.g. myuser/medusa-qwen-grpo). HF_TOKEN should be a
+    # Space Secret, not a Variable.
+    MEDUSA_GRPO_LOAD_IN_4BIT="0" \
+    MEDUSA_GRPO_NO_MERGE="0" \
+    MEDUSA_GRPO_MAX_NEW_TOKENS="192" \
+    MEDUSA_GRPO_TEMPERATURE="0.1"
+
+EXPOSE 7860
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:7860/health')" || exit 1
+
+CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]

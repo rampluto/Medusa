@@ -88,3 +88,86 @@ python trainer/train_medusa_grpo.py \
 GRPO will resume from the SFT adapter weights instead of cold-starting
 from the base model — significantly faster convergence and a much
 stronger eval score on `eval_grpo_olist.py`.
+
+---
+
+## Serving the GRPO agent on an HF Space
+
+The `grpo_trained` UI agent is wired through
+`server.agent_policies.GrpoTrainedPolicy`, which loads a callable named by
+the env var `MEDUSA_GRPO_PREDICTOR` (format `module:function`). Without
+this var the UI returns:
+
+> `grpo_trained agent requires MEDUSA_GRPO_PREDICTOR='module:function' to be configured.`
+
+`trainer/grpo_predictor_hub.py` is a drop-in predictor that loads your
+**Hub-hosted base + LoRA adapter** in-process (mirrors `eval_grpo_olist.py`
+exactly: same SYSTEM_PROMPT, same prompt rendering, same action parser,
+same fallback to `PROFILE_TABLE bronze` on parse failure). Heavy modules
+(`torch`, `transformers`, `peft`) are imported lazily and the
+`(model, tokenizer)` bundle is cached behind a thread-safe lock so the
+first request triggers a single download/load and every subsequent call
+reuses it.
+
+### 1. HF Space Variables and Secrets
+
+Open the Space → Settings → **Variables and secrets**. Add:
+
+| Type     | Key                       | Value (example)                  | Notes |
+|----------|---------------------------|----------------------------------|-------|
+| Variable | `MEDUSA_GRPO_PREDICTOR`   | `trainer.grpo_predictor_hub:predict` | The only one that MUST be set. |
+| Variable | `BASE_MODEL_ID`           | `Qwen/Qwen2.5-3B-Instruct`       | Match `train_sft_olist.py` / `train_medusa_grpo.py` / `eval_grpo_olist.py`. |
+| Variable | `GRPO_MODEL_ID`           | `myuser/medusa-qwen-grpo`        | Your Hub repo holding the LoRA adapter. |
+| Secret   | `HF_TOKEN`                | `hf_…`                           | Required if the base model or your adapter is gated/private. Use **Secret**, not Variable, so it's masked in logs. |
+
+Optional knobs (sensible defaults baked into the Dockerfile reference):
+
+| Type     | Key                            | Default   | Effect |
+|----------|--------------------------------|-----------|--------|
+| Variable | `MEDUSA_GRPO_LOAD_IN_4BIT`     | `0`       | `1` → nf4 quantization (saves ~5 GB VRAM, slightly slower). |
+| Variable | `MEDUSA_GRPO_NO_MERGE`         | `0`       | `1` → keep the LoRA adapter wrapped instead of `merge_and_unload()`. |
+| Variable | `MEDUSA_GRPO_MAX_NEW_TOKENS`   | `192`     | Per-step generation budget. |
+| Variable | `MEDUSA_GRPO_TEMPERATURE`      | `0.1`     | Set to `0` for greedy decoding. |
+
+### 2. GPU hardware
+
+`Settings → Hardware`:
+
+| SKU       | Works? | Notes |
+|-----------|--------|-------|
+| CPU basic | No     | `transformers` will load but a single forward pass takes minutes. |
+| T4 small  | Yes    | Set `MEDUSA_GRPO_LOAD_IN_4BIT=1` (Qwen2.5-3B in bf16 won't fit). |
+| A10G small / L4 | Yes | Comfortable in bf16 with `merge_and_unload`. |
+
+### 3. Image dependencies
+
+The repo-root `Dockerfile` does not install `torch`/`transformers`/`peft`/
+`accelerate`/`bitsandbytes`. The Hub predictor needs all five.
+`trainer/Dockerfile.hub_predictor` is a **reference image** that layers
+those wheels on top of the existing server stack and pins a CUDA-aware
+torch build. Two ways to use it:
+
+* **Hand-merge** the relevant `RUN uv pip install …` lines and the
+  `ENV` block into the root `Dockerfile`. HF Spaces only reads
+  `Dockerfile` at the repo root, so this is the simplest path.
+* **Deploy a sibling Space** from a branch where `Dockerfile.hub_predictor`
+  is renamed to `Dockerfile`.
+
+### 4. Cold-start warmup (optional)
+
+The first call into `predict()` triggers the model load (~30–60 s for
+Qwen2.5-3B from the Hub) — the user clicking "Auto-run" the very first
+time will wait that long. To pre-pay the cost at server startup, call
+`trainer.grpo_predictor_hub.warmup()` from a FastAPI startup hook, or
+ping `/run/auto-run` with the GRPO agent right after deploy.
+
+### 5. Troubleshooting
+
+| Symptom | Cause |
+|--------|-------|
+| `grpo_trained agent requires MEDUSA_GRPO_PREDICTOR=...` | Variable not set, or set to a non-`module:function` string. |
+| `Configured GRPO predictor 'foo:bar' is missing or not callable.` | Module imports OK but the named attribute doesn't exist or isn't callable. Verify the symbol with `python -c "import foo; print(foo.bar)"`. |
+| `GRPO_MODEL_ID is not set` (raised by the predictor) | Add the Variable; it's the Hub repo id of your LoRA adapter. |
+| `OutOfMemoryError` during first call | Switch to `MEDUSA_GRPO_LOAD_IN_4BIT=1`, or upgrade hardware to A10G. |
+| Model loads on every request (slow) | The worker is being recycled. Check Space logs for OOM-killer / health-check failures, and consider warmup at startup. |
+| 4xx with `unknown action` | Adapter is producing a non-VALID_ACTIONS name. Predictor falls back to `PROFILE_TABLE bronze`; check Space logs for the raw output and re-train if persistent. |
