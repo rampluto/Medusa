@@ -19,7 +19,7 @@ tags:
 
 Most "LLM agent" demos crumble the moment the world stops being a toy. The cleaning is canned, the join keys are immaculate, and the grader is another LLM that quietly cheers the agent on. Real data engineering doesn't work like that. Pipelines fail because the *world* keeps changing — yesterday's schema doesn't match today's, a numeric column comes back as `"$50.50"`, and a single duplicate key blows up an OOM-bound merge.
 
-So we built **MEDUSA** — *Medallion-Engineered Deterministic Unified Storage Agent* — an [OpenEnv](https://github.com/openenv-ai/openenv) environment + a two-stage training recipe (SFT → GRPO) that turns a small open model into a usable autonomous data engineer. No LLM-as-judge. No reward hacking. Just a deterministic Python grader running mathematical assertions on a cumulative Silver table.
+So we built **MEDUSA** — *Medallion-Engineered Deterministic Unified Storage Agent* — an [OpenEnv](https://github.com/openenv-ai/openenv) environment + a two-stage training recipe (SFT → GRPO) that turns a small open model into a usable autonomous data engineer. A deterministic Python grader running mathematical assertions on a cumulative Silver table.
 
 This post is the long story: what we built, what tried to kill us during training, and what worked.
 
@@ -27,18 +27,18 @@ This post is the long story: what we built, what tried to kill us during trainin
 
 ## TL;DR
 
-- **Environment:** A 30-day Bronze→Silver pipeline gauntlet built as an [OpenEnv](https://huggingface.co/spaces/anubhavkamal/medusa-env) Space. Every day has at least one anomaly. Major trap days at **Day 8** (type trap), **Day 14** (OOM), **Day 21** (schema drift), **Day 28** (null nuke).
+- **Environment:** A 30-day Bronze→Silver pipeline gauntlet built as an [OpenEnv](https://huggingface.co/spaces/rampluto/medusa-env-final) Space. Every day has at least one anomaly. Major trap days at **Day 8** (type trap), **Day 14** (OOM), **Day 21** (schema drift), **Day 28** (null nuke).
 - **Agent:** Qwen2.5-3B-Instruct with LoRA, trained in two stages — **SFT** on synthetic expert trajectories, then **GRPO** against the live environment using TRL + Unsloth.
 - **Reward:** Hybrid of (1) a graded JSON-format reward to keep outputs parseable and (2) the actual environment reward replayed step-by-step.
-- **Outcome:** 600 GRPO steps on an A10G (≈ **1.97M tokens** trained), recoverable training stats parsed from stdout (because HF Jobs disks are ephemeral), and an Olist-based 30-day evaluation harness.
+- **Outcome:** 600 GRPO steps on an A10G (≈ **1.97M tokens** trained), recoverable training stats parsed from stdout, and an randomly selected dataset, Olist-based 30-day evaluation harness.
 
 Repo: <https://github.com/rampluto/Medusa>
-Space: <https://huggingface.co/spaces/anubhavkamal/medusa-env>
+Space: <https://huggingface.co/spaces/rampluto/medusa-env-final>
 SFT adapter: <https://huggingface.co/anubhavkamal/medusa-qwen-sft>
 GRPO adapter: <https://huggingface.co/anubhavkamal/medusa-qwen-grpo>
 
-![MEDUSA architecture diagram — placeholder]( /blog/assets/medusa/architecture.png )
-*<sub>Replace with your architecture diagram: Bronze → Agent → Silver + Quarantine, with the deterministic Grader hanging off `COMMIT_DAY`.</sub>*
+![MEDUSA architecture](grpo_recovery/architecture.png)
+*<sub>Bronze batch → MEDUSA Agent (Qwen2.5-3B + LoRA, 7 tools) → Silver Table + Quarantine. The Deterministic Grader fires on every `COMMIT_DAY`. Training flows through two stages: SFT on synthetic expert trajectories, then GRPO against the live environment.</sub>*
 
 ---
 
@@ -120,9 +120,6 @@ We trained **Qwen2.5-3B-Instruct + LoRA** in two stages:
 We generated ~1,000 synthetic Bronze→Silver trajectories with an expert rule-based solver. To prevent name-memorization (the model learning "if `total_amount`, then `cast`"), the schema generator picks a random domain (`medical`/`finance`/`logistics`/`gaming`/`retail`) per episode and renames every column accordingly. The agent has to read profile output and *infer* what to do, not pattern-match column names.
 
 SFT used standard TRL `SFTTrainer` with rank-16 LoRA on `q_proj/k_proj/v_proj/o_proj`. One epoch, batch 2 × grad-accum 8, lr `2e-5`, on an A10G via `hf jobs run`.
-
-![SFT loss curve — placeholder]( /blog/assets/medusa/sft_loss.png )
-*<sub>Drop in your SFT training loss / eval-loss plot here.</sub>*
 
 ### Stage 2 — GRPO (`trainer/train_medusa_grpo.py`)
 
@@ -265,8 +262,8 @@ Two things in this table are worth highlighting:
 
 ### The 6-panel training-health chart
 
-![GRPO panels]( /blog/assets/medusa/panels.png )
-*<sub>Source: `grpo_recovery/panels.png`. Six panels: total reward, env reward, JSON-format reward, policy entropy, gradient norm, mean completion length.</sub>*
+![GRPO panels](grpo_recovery/panels.png)
+*<sub>Six panels: total reward, env reward, JSON-format reward, policy entropy, gradient norm, mean completion length. Source: `grpo_recovery/panels.png`.</sub>*
 
 The shape of the run, in numbers:
 
@@ -284,8 +281,8 @@ The 50-step moving average of `rewards/json_format_reward/mean` first **crosses 
 
 ### Reward trajectory
 
-![Reward trajectory]( /blog/assets/medusa/reward_trajectory.png )
-*<sub>Source: `grpo_recovery/reward_trajectory.png`. Faint = batch mean; bold = 100-call moving mean. Note `min batch_mean = −1.333` (one bad batch where 11 of 60 generations emitted `invalid_action`) and `best moving_mean = −0.131`.</sub>*
+![Reward trajectory](grpo_recovery/reward_trajectory.png)
+*<sub>Faint = batch mean; bold = 100-call moving mean. `min batch_mean = −1.333` (one bad batch where 11/60 generations emitted `invalid_action`); `best moving_mean = −0.131`. Source: `grpo_recovery/reward_trajectory.png`.</sub>*
 
 ### Failure-mode evolution
 
@@ -299,8 +296,8 @@ The single most informative artifact we recovered is the **failure dictionary ov
 
 The middle window is the cleanest proof GRPO is doing something — `invalid_action` falls **−42 %** from the first window. The bump back up in the final window is the model rediscovering an `invalid_action` attractor (likely a near-miss of `EVOLVE_SCHEMA` vs. `EVOLVE_SILVER_SCHEMA`) and being pulled back toward the correct vocabulary by the `−0.30` format penalty. We expect this to drop back below 30 with more training.
 
-![Failure modes — placeholder]( /blog/assets/medusa/failure_modes.png )
-*<sub>Stacked area chart of failure counts per 10-call window. Generate from `grpo_recovery/df_reward.csv` `failures` column.</sub>*
+![Failure modes](grpo_recovery/failure_modes.png)
+*<sub>Stacked area chart of failure counts per 10-call window, generated from `grpo_recovery/df_reward.csv`. The middle window (calls 200–400) is the cleanest proof GRPO is learning: `invalid_action` drops 42 % before partially rebounding in the final window.</sub>*
 
 ---
 
@@ -326,9 +323,6 @@ python eval_grpo_olist.py \
 ```
 
 ### Per-day breakdown
-
-![Per-day rewards — placeholder]( /blog/assets/medusa/per_day_rewards.png )
-*<sub>Bar chart of `sum_reward` per day for GRPO vs Expert. Highlight Days 8/14/21/28 in red. Generate from `eval_results.json["grpo"]["per_day"]`.</sub>*
 
 ### Comparison summary
 
@@ -397,9 +391,9 @@ python eval_grpo_olist.py --run-baseline
 
 The Space is also live and clickable:
 
-- **OpenEnv Space:** <https://huggingface.co/spaces/anubhavkamal/medusa-env>
-- **API docs:** `BASE_URL/docs`
-- **Playground:** `BASE_URL/web`
+- **OpenEnv Space:** <https://huggingface.co/spaces/rampluto/medusa-env-final>
+- **API docs:** <https://rampluto-medusa-env-final.hf.space/docs>
+- **Playground (Studio UI):** <https://rampluto-medusa-env-final.hf.space/medusa/studio>
 
 If you train on top of this, please let us know — and especially please tell us when *your* agent collapses into emitting `deduplicate_rows`. We'll know exactly which knob to turn.
 
