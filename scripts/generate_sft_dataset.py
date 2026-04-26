@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 from server.medusa_env import MedusaEnv
 from scenarios import DayDataGenerator, detect_column_roles
 from models import MedusaAction
+from medusa_prompts import SYSTEM_PROMPT
 
 # Dynamic generator for randomization
 class RandomizedSchemaGenerator(DayDataGenerator):
@@ -137,14 +138,25 @@ def main():
                     ]
                     action = random.choice(bad_actions)
                 
-                # 3. Format Target: <think> blocks + JSON
-                action_text = f"<think>\n{reasoning}\n</think>\n" + json.dumps({"action": action.action, "params": action.params})
-                
+                # 3. Format Target: <think> reasoning + fenced JSON action.
+                # The fence is critical: env messages can contain '{...}'
+                # (grader reports etc.), so leaking those into the reasoning
+                # text would break a greedy '\{.*\}' regex parse. Wrapping the
+                # action JSON in ```json...``` makes the eval-side parser
+                # unambiguous regardless of reasoning content.
+                action_json = json.dumps(
+                    {"action": action.action, "params": action.params}
+                )
+                action_text = (
+                    f"<think>\n{reasoning}\n</think>\n"
+                    f"```json\n{action_json}\n```"
+                )
+
                 chatml = {
                     "messages": [
-                        {"role": "system", "content": "You are a perfect Autonomous Data Engineer Agent solving the Medusa environment pipelines."},
+                        {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
-                        {"role": "assistant", "content": action_text}
+                        {"role": "assistant", "content": action_text},
                     ]
                 }
                 f.write(json.dumps(chatml) + "\n")

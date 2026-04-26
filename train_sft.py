@@ -174,7 +174,18 @@ def main() -> None:
     if not effective_hub_model_id and args.push_to_hub:
         raise ValueError("--push-to-hub requires --hub-model-id.")
 
-    sft_config = SFTConfig(
+    import inspect
+
+    _sft_sig = inspect.signature(SFTConfig.__init__).parameters
+    length_key = "max_length" if "max_length" in _sft_sig else "max_seq_length"
+    eval_strategy_key = (
+        "eval_strategy" if "eval_strategy" in _sft_sig else "evaluation_strategy"
+    )
+    eval_strategy_value = (
+        "steps" if (eval_dataset is not None and args.eval_steps > 0) else "no"
+    )
+
+    sft_config_kwargs: dict[str, Any] = dict(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.grad_accum,
@@ -189,14 +200,20 @@ def main() -> None:
         push_to_hub=args.push_to_hub,
         hub_model_id=effective_hub_model_id if effective_hub_model_id else None,
         dataset_text_field="text",
-        max_seq_length=args.max_seq_len,
         packing=False,
         seed=args.seed,
-        evaluation_strategy=(
-            "steps" if (eval_dataset is not None and args.eval_steps > 0) else "no"
-        ),
         eval_steps=args.eval_steps,
     )
+    sft_config_kwargs[length_key] = args.max_seq_len
+    sft_config_kwargs[eval_strategy_key] = eval_strategy_value
+
+    if args.debug:
+        print(
+            f"[debug] SFTConfig length_key={length_key!r}, "
+            f"eval_strategy_key={eval_strategy_key!r}"
+        )
+
+    sft_config = SFTConfig(**sft_config_kwargs)
 
     # Keep compatibility across TRL versions.
     trainer = None

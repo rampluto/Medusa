@@ -25,21 +25,6 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-SYSTEM_PROMPT = (
-    "You are a careful Autonomous Data Engineer Agent solving the Medusa "
-    "environment. Return only valid JSON with keys 'action' and 'params'."
-)
-
-VALID_ACTIONS = {
-    "PROFILE_TABLE",
-    "CLEAN_COLUMN",
-    "DEDUPLICATE",
-    "EVOLVE_SILVER_SCHEMA",
-    "QUARANTINE_ROWS",
-    "EXECUTE_MERGE",
-    "COMMIT_DAY",
-}
-
 warnings.filterwarnings(
     "ignore",
     message=r"The attention mask API under `transformers\.modeling_attn_mask_utils`.*",
@@ -50,6 +35,8 @@ warnings.filterwarnings(
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+from medusa_prompts import SYSTEM_PROMPT, VALID_ACTIONS  # noqa: E402
 
 
 def import_unsloth_first():
@@ -285,10 +272,32 @@ class RewardLogger:
 
 def make_reward_funcs(args: argparse.Namespace, logger: RewardLogger):
     def json_format_reward(completions: list[Any], **_: Any) -> list[float]:
+        """Graded JSON reward to prevent binary reward collapse.
+
+        Score breakdown (post-collapse-fix):
+          +0.20  fully valid JSON with correct action + params schema
+          -0.30  valid JSON, correct keys, but action name not in VALID_ACTIONS
+                 (was +0.05; that tier created the `deduplicate_rows`
+                 attractor — keep it negative so emitting fake action names
+                 is strictly worse than emitting a real one.)
+           0.00  valid JSON but missing 'action' or 'params' keys
+          -0.30  JSON-like (starts with '{') but unparseable
+          -0.50  no JSON at all
+        """
         rewards = []
         for completion in completions:
-            action, error = parse_action(completion_text(completion))
-            rewards.append(0.2 if action is not None and error is None else -0.5)
+            text = completion_text(completion).strip()
+            action, error = parse_action(text)
+            if action is not None and error is None:
+                rewards.append(0.2)
+            elif error == "invalid_action":
+                rewards.append(-0.30)
+            elif error in ("invalid_params", None):
+                rewards.append(0.0)
+            elif error == "invalid_json":
+                rewards.append(-0.30)
+            else:
+                rewards.append(-0.50)
         return rewards
 
     def medusa_env_reward(
@@ -371,6 +380,7 @@ def load_unsloth_model(args: argparse.Namespace):
     if getattr(model, "generation_config", None) is not None:
         model.generation_config.max_length = None
         model.generation_config.max_new_tokens = args.max_completion_length
+        model.generation_config.min_new_tokens = args.min_new_tokens
 
     # If resuming from an SFT adapter, we will load it later (in main),
     # because it may come from Hub or disk.
@@ -402,7 +412,15 @@ def load_unsloth_model(args: argparse.Namespace):
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train MedusaEnv with GRPO via Unsloth + TRL.")
-    parser.add_argument("--model-name", default="unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit")
+    parser.add_argument(
+        "--model-name",
+        default="Qwen/Qwen2.5-3B-Instruct",
+        help=(
+            "Base model. Must match `train_sft.py --model-id` and "
+            "`eval_grpo_olist.py --base` end-to-end, otherwise the LoRA "
+            "adapter shape will be incompatible."
+        ),
+    )
     parser.add_argument("--output-dir", default="trainer/medusa-grpo-output")
     parser.add_argument(
         "--sft-adapter",
@@ -422,7 +440,7 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Target repo id for pushing GRPO adapter (e.g. user/medusa-qwen-grpo).",
     )
-    parser.add_argument("--episodes", type=int, default=8)
+    parser.add_argument("--episodes", type=int, default=32)
     parser.add_argument("--dataset-size", type=int, default=512)
     parser.add_argument("--rows-per-day", type=int, default=50)
     parser.add_argument("--max-prefix-steps", type=int, default=160)
@@ -432,10 +450,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-seq-length", type=int, default=2048)
     parser.add_argument("--max-prompt-length", type=int, default=1536)
     parser.add_argument("--max-completion-length", type=int, default=192)
-    parser.add_argument("--num-generations", type=int, default=4)
+    # ── Anti-collapse: more generations → more diverse rewards → fewer zero-gradient batches
+    parser.add_argument("--num-generations", type=int, default=6)
     parser.add_argument("--per-device-train-batch-size", type=int, default=1)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=5e-6)
+    # ── Lowered from 5e-6; higher LR burns entropy too fast in LoRA GRPO
+    parser.add_argument("--learning-rate", type=float, default=2e-6)
+    # ── Force minimum token length so model can't exploit a 14-token hack
+    parser.add_argument("--min-new-tokens", type=int, default=15)
+    # ── Entropy regularization coefficient to prevent policy collapse (0 = disabled)
+    parser.add_argument("--entropy-coeff", type=float, default=0.02)
     parser.add_argument("--lora-rank", type=int, default=16)
     parser.add_argument(
         "--lora-extended-targets",
@@ -508,6 +532,7 @@ def main() -> None:
     from trl import GRPOConfig, GRPOTrainer
 
     config_values = {
+        "temperature": 0.9,          # slightly higher temp for more exploration
         "output_dir": str(output_dir),
         "learning_rate": args.learning_rate,
         "adam_beta1": 0.9,
@@ -522,6 +547,10 @@ def main() -> None:
         "num_generations": args.num_generations,
         "max_prompt_length": args.max_prompt_length,
         "max_completion_length": args.max_completion_length,
+        # ── Entropy regularization: penalises over-confident/collapsed policy
+        "entropy_coeff": args.entropy_coeff,
+        # ── Force minimum token output so model can't exploit 14-token hacks
+        "min_new_tokens": args.min_new_tokens,
         "max_steps": args.max_steps,
         "save_steps": args.save_steps,
         "report_to": "none",

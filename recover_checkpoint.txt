@@ -1,0 +1,72 @@
+1. Can checkpoint-300 be used for inference?
+Yes — but only if you can recover the files from the runner before the job is destroyed.
+
+The Trainer is configured to checkpoint every --save-steps (default 50, you set 50), so by step 300 you have a full checkpoint at:
+
+trainer/medusa-grpo-output/checkpoint-300/
+That folder contains the LoRA adapter weights (adapter_model.safetensors), adapter_config.json, optimizer state, scheduler state, tokenizer files, and trainer state. You only need adapter_model.safetensors + adapter_config.json + tokenizer for inference. Load it like any PEFT adapter:
+
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+base = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-3B-Instruct", ...)
+model = PeftModel.from_pretrained(base, "trainer/medusa-grpo-output/checkpoint-300")
+tok   = AutoTokenizer.from_pretrained("trainer/medusa-grpo-output/checkpoint-300")
+So functionally the checkpoint is usable.
+
+2. Has checkpoint-300 been pushed to Hugging Face?
+No. It has not been pushed. I confirmed this in the code.
+
+The only push to the Hub happens at the very end of training, after trainer.train() returns:
+
+
+train_medusa_grpo.py
+Lines 579-601
+    tqdm.write("[train] starting GRPO")
+    trainer.train()
+    tqdm.write("[save] saving LoRA adapter")
+    model.save_pretrained(output_dir / "lora_adapter")
+    tokenizer.save_pretrained(output_dir / "lora_adapter")
+    if args.push_to_hub:
+        tqdm.write(f"[hub] pushing adapter to {args.hub_model_id}")
+        # Push the adapter folder (PEFT format) like train_sft.py.
+        try:
+            from huggingface_hub import HfApi
+            api = HfApi()
+            api.create_repo(args.hub_model_id, repo_type="model", exist_ok=True)
+            api.upload_folder(
+                repo_id=args.hub_model_id,
+                repo_type="model",
+                folder_path=str(output_dir / "lora_adapter"),
+                path_in_repo=".",
+            )
+        except Exception as exc:  # noqa: BLE001
+            tqdm.write(f"[warn] push_to_hub failed: {exc}")
+Notes from this block:
+
+The push only fires inside the if args.push_to_hub: branch, after trainer.train() completes normally. If you cancel mid-run, this code is never reached.
+It pushes output_dir / "lora_adapter", which is written by model.save_pretrained(...) after training ends — not the intermediate checkpoint-* folders.
+There's no hub_strategy="checkpoint" / push_to_hub=True set on GRPOConfig, so TRL/Transformers does not auto-push intermediate checkpoints either. Confirmed by grep — no hub_strategy anywhere in the script.
+3. Practical implication if you cancel now
+You're running this as an HF Job (per the launcher in training_pipeline.ipynb). On HF Jobs the runner's local disk is ephemeral — when the job stops (cancel or finish), the container is torn down and trainer/medusa-grpo-output/checkpoint-300/ is deleted unless it was explicitly uploaded somewhere.
+
+So if you cancel right now, you will lose checkpoint-300 along with everything else. To save it, you have a few options before cancelling:
+
+Let the run reach --max-steps naturally — then the final lora_adapter/ (effectively the latest weights) will be auto-pushed to HUB_GRPO_ID by the block above.
+Manually push checkpoint-300 from inside the job before cancelling. From a notebook/exec into the same job, run something like:
+from huggingface_hub import HfApi
+api = HfApi()
+api.create_repo("<your-user>/medusa-qwen-grpo-ckpt-300", exist_ok=True)
+api.upload_folder(
+    repo_id="<your-user>/medusa-qwen-grpo-ckpt-300",
+    folder_path="trainer/medusa-grpo-output/checkpoint-300",
+    path_in_repo=".",
+)
+(HF Jobs typically don't give you a second shell, so this is usually only doable if you bake it into the script.)
+Patch the script for future runs to push every checkpoint, e.g. add to GRPOConfig:
+"push_to_hub": True,
+"hub_model_id": args.hub_model_id,
+"hub_strategy": "checkpoint",
+That makes Transformers upload each checkpoint-N/ automatically as it's written. (This is a code change — not doing it now since we're in Ask mode.)
+TL;DR
+checkpoint-300 is valid and usable for inference if you have the files.
+It is not on the Hugging Face Hub — the script only pushes once, at the end, and only the final lora_adapter/. If you cancel the HF Job now, the checkpoint goes away with the runner.
