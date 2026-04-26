@@ -860,11 +860,13 @@ async function loadDayDetail(day) {
       body: JSON.stringify(shared.basePayload()),
       signal: controller ? controller.signal : undefined,
     });
-    detail = await response.json();
+    const { text, data } = await shared.readFetchBody(response);
+    detail = data;
     if (!response.ok) {
-      throw new Error(
-        typeof detail?.detail === "string" ? detail.detail : `HTTP ${response.status}`
-      );
+      throw new Error(shared.httpErrorMessage(response, text, data));
+    }
+    if (detail == null) {
+      throw new Error("Empty or non-JSON response from day-detail");
     }
   } catch (error) {
     if (error && error.name === "AbortError") return; // superseded by a newer pin
@@ -1369,9 +1371,12 @@ async function cleanUploadedDataframe() {
   document.getElementById("dq-section").style.display = "none";
 
   const response = await fetch("/api/run/clean-dataframe", { method: "POST", body: form });
-  const data = await response.json();
+  const { text, data } = await shared.readFetchBody(response);
   if (!response.ok) {
-    throw new Error(data.detail ? JSON.stringify(data.detail) : response.statusText);
+    throw new Error(shared.httpErrorMessage(response, text, data));
+  }
+  if (data == null) {
+    throw new Error("Empty or non-JSON response from clean-dataframe");
   }
 
   const blob = new Blob([data.cleaned_csv], { type: "text/csv" });
@@ -1414,8 +1419,9 @@ async function showDqReport(sourceFile, cleanedCsv, cleanedFilename) {
     scoreForm.append("cleaned", new Blob([cleanedCsv], { type: "text/csv" }), cleanedFilename);
 
     const res = await fetch("/api/run/score-dataframes", { method: "POST", body: scoreForm });
-    const scored = await res.json();
-    if (!res.ok) throw new Error(scored.detail ? JSON.stringify(scored.detail) : res.statusText);
+    const { text, data: scored } = await shared.readFetchBody(res);
+    if (!res.ok) throw new Error(shared.httpErrorMessage(res, text, scored));
+    if (scored == null) throw new Error("Empty or non-JSON response from score-dataframes");
 
     statusEl.innerHTML = `
       <span class="status-pill is-good">DQ Scored</span>

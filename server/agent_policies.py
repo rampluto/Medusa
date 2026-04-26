@@ -19,6 +19,14 @@ except ImportError:
         from models import MedusaAction, MedusaActionType
         from tasks import Task
 
+try:
+    from ..medusa_prompts import VALID_ACTIONS
+except ImportError:  # pragma: no cover
+    try:
+        from medusa_env.medusa_prompts import VALID_ACTIONS
+    except ImportError:
+        from medusa_prompts import VALID_ACTIONS
+
 
 PolicyAction = Union[MedusaAction, MedusaActionType]
 LOGGER = logging.getLogger(__name__)
@@ -224,18 +232,50 @@ class GrpoTrainedPolicy(BaseAgentPolicy):
     ) -> PolicyAction:
         predicted = self._predict_action(task=task, state=state, observation=observation)
         LOGGER.debug("grpo_policy_raw_prediction type=%s", type(predicted).__name__)
-        if isinstance(predicted, MedusaAction):
-            LOGGER.debug("grpo_policy_selected_action action=%s", predicted.action)
-            return predicted
-        if isinstance(predicted, MedusaActionType):
-            LOGGER.debug("grpo_policy_selected_action action=%s", predicted.value)
-            return MedusaAction(action=predicted.value, params={})
+        # Canonical MedusaAction (may be a different *class* identity if the
+        # predictor imported `models` from another sys.path context — isinstance
+        # would fail even though the object is a valid action).
+        if isinstance(predicted, MedusaAction) and str(predicted.action) in VALID_ACTIONS:
+            return MedusaAction(
+                action=predicted.action,
+                params=dict(getattr(predicted, "params", None) or {}),
+            )
+        if isinstance(predicted, MedusaActionType) and str(predicted.value) in VALID_ACTIONS:
+            return MedusaAction(
+                action=predicted.value,
+                params={},
+            )
+        # Duck-typed Pydantic / OpenEnv `Action` subclasses
+        act = getattr(predicted, "action", None)
+        p = getattr(predicted, "params", None)
+        if (
+            isinstance(act, str)
+            and act in VALID_ACTIONS
+            and (p is None or isinstance(p, dict))
+        ):
+            LOGGER.debug("grpo_policy_duck_typed action=%s", act)
+            return MedusaAction(action=act, params=dict(p or {}))
+
+        if isinstance(predicted, dict):
+            a2 = predicted.get("action")
+            p2 = predicted.get("params", {})
+            if (
+                isinstance(a2, str)
+                and a2 in VALID_ACTIONS
+                and isinstance(p2, dict)
+            ):
+                return MedusaAction(action=a2, params=p2)
+
+        # Last resort: string must be a bare v4.0 action name (legacy callers)
         action_name = str(predicted)
-        if action_name not in {action.value for action in MedusaActionType}:
-            LOGGER.error("grpo_policy_unknown_action action=%s", action_name)
-            raise ValueError(f"GRPO predictor returned unknown action {action_name!r}.")
-        LOGGER.debug("grpo_policy_selected_action action=%s", action_name)
-        return MedusaAction(action=action_name, params={})
+        if action_name in VALID_ACTIONS:
+            return MedusaAction(action=action_name, params={})
+        LOGGER.error("grpo_policy_unknown_prediction repr=%r", predicted)
+        raise ValueError(
+            "GRPO predictor must return a MedusaAction-like object with "
+            f"action in {sorted(VALID_ACTIONS)}. Got: {type(predicted).__name__!r} "
+            f"/ {action_name[:200]!r}"
+        )
 
 
 def _load_grpo_predictor() -> Any:

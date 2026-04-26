@@ -17,7 +17,7 @@ and these supporting variables (all read from `os.environ`):
                                (saves a few seconds at startup, costs
                                 a small per-token slowdown)
     MEDUSA_GRPO_MAX_NEW_TOKENS  default 192
-    MEDUSA_GRPO_TEMPERATURE     default 0.1   (0 disables sampling)
+    MEDUSA_GRPO_TEMPERATURE     default 0.0   (0 = greedy, fewer format slips)
 
 The predictor mirrors `eval_grpo_olist.py` end-to-end:
   - same prompt format (SYSTEM_PROMPT + state-rendered user turn)
@@ -165,9 +165,18 @@ def _render_prompt_from_state(state: Any) -> str:
     total_raw = int(getattr(state, "total_raw_rows", 0) or 0)
     did_dedup = bool(getattr(state, "did_dedup_today", False))
     did_evolve = bool(getattr(state, "did_evolve_schema", False))
+    did_merge = bool(getattr(state, "did_merge_today", False))
     new_schema_cols = list(getattr(state, "new_schema_cols", []) or [])
     last_action_result = getattr(state, "last_action_result", "") or ""
     trap_type = getattr(state, "trap_type", "") or ""
+    u_b = float(getattr(state, "uniqueness_b", 1.0) or 1.0)
+    profiled = getattr(state, "profiled_tables_today", None) or {}
+    has_profiled = bool(profiled) if isinstance(profiled, dict) else bool(profiled)
+    cleaned = list(getattr(state, "cleaned_columns_today", []) or [])
+    day_an = getattr(state, "day_anomalies", None) or {}
+    checklist: list = []
+    if isinstance(day_an, dict) and current_day in day_an:
+        checklist = list(day_an.get(current_day) or [])
 
     unhandled = getattr(state, "unhandled_anomalies_today", {}) or {}
     if not isinstance(unhandled, dict):
@@ -179,10 +188,26 @@ def _render_prompt_from_state(state: Any) -> str:
         f"Current Target Schema: {contract_cols}",
         f"Total Silver Rows Committed (All Days): {silver_rows}",
         f"Today's Incoming Batch Rows: {total_raw}",
+        f"Profiled at least one table today (Heuristic step 0): {'Yes' if has_profiled else 'No'}",
         f"Is deduplication complete for today? {'Yes' if did_dedup else 'No'}",
+        f"Uniqueness of bronze key (uniqueness_b, for dedup fallback): {u_b:.4f}",
+        f"Schema evolved this day: {'Yes' if did_evolve else 'No'}",
+        f"Merge into silver done today: {'Yes' if did_merge else 'No'}",
+        f"Columns cleaned this day (col, op already applied): {cleaned or '[]'}",
         "",
-        "=== ACTIVE ANOMALIES TODAY ===",
+        "=== ANOMALY CHECKLIST (process strictly top to bottom) ===",
     ]
+    if not checklist:
+        lines.append("-- (empty for this day)")
+    else:
+        for i, pair in enumerate(checklist, start=1):
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                col, raw_op = pair[0], pair[1]
+                lines.append(f"{i}. column={col!r}  raw_op={str(raw_op)!r}")
+            else:
+                lines.append(f"{i}. {pair!r}")
+
+    lines.extend(["", "=== REMAINING / AGGREGATED (same source as env unhandled) ===", "=== ACTIVE ANOMALIES TODAY ==="])
 
     if not unhandled:
         lines.append("None. The pipeline is clean. Ready to DEDUPLICATE and EXECUTE_MERGE.")
@@ -201,15 +226,65 @@ def _render_prompt_from_state(state: Any) -> str:
     lines.append("=== PREVIOUS ACTION FEEDBACK ===")
     lines.append(f"{last_action_result}\n" if last_action_result else "No previous action taken today.\n")
     lines.append(
-        "Based on the data engineering required, output a valid JSON `MedusaAction` "
-        "with keys 'action' and 'params'."
+        "You must follow the Heuristic Golden-Path policy in the system message. "
+        "Reply with exactly one ```json code block: keys \"action\" and \"params\" only."
     )
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Action parsing  (mirrors eval_grpo_olist.parse_action)
+# Action parsing  (mirrors eval_grpo_olist.parse_action, plus safe brace matching)
 # ---------------------------------------------------------------------------
+
+
+def _first_balanced_json_object(s: str) -> Optional[str]:
+    """Return the first `{...}` segment with balanced braces, or None."""
+    start = s.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    q: Optional[str] = None
+    for i in range(start, len(s)):
+        c = s[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == q:
+                in_str = False
+                q = None
+            continue
+        if c in "\"'":
+            in_str = True
+            q = c
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return s[start : i + 1]
+    return None
+
+
+def _iter_balanced_json_objects(s: str) -> list[str]:
+    """Return every top-level `{...}` fragment with balanced braces."""
+    out: list[str] = []
+    i = 0
+    while i < len(s):
+        j = s.find("{", i)
+        if j < 0:
+            break
+        frag = _first_balanced_json_object(s[j:])
+        if not frag:
+            i = j + 1
+            continue
+        out.append(frag)
+        i = j + len(frag)
+    return out
 
 
 def _parse_action(text: str) -> Tuple[Optional[MedusaAction], Optional[str]]:
@@ -233,22 +308,27 @@ def _parse_action(text: str) -> Tuple[Optional[MedusaAction], Optional[str]]:
             return None, f"invalid_action:{action}"
         return MedusaAction(action=action, params=params), None
 
-    # JSON object (greedy across newlines)
-    json_match = re.search(r"\{.*\}", clean, re.DOTALL)
-    if not json_match:
-        return None, "missing_json"
-    try:
-        payload = json.loads(json_match.group(0))
-    except json.JSONDecodeError:
-        return None, "invalid_json"
-
-    action = payload.get("action")
-    params = payload.get("params", {})
-    if not isinstance(action, str) or action not in VALID_ACTIONS:
-        return None, f"invalid_action:{action}"
-    if not isinstance(params, dict):
-        return None, "invalid_params"
-    return MedusaAction(action=action, params=params), None
+    # Try every balanced `{...}` in order — models sometimes prefix junk objects.
+    candidates = _iter_balanced_json_objects(clean)
+    if not candidates:
+        m = re.search(r"\{.*\}", clean, re.DOTALL)
+        if m:
+            candidates = [m.group(0)]
+    for blob in candidates:
+        try:
+            payload = json.loads(blob)
+        except json.JSONDecodeError:
+            continue
+        action = payload.get("action")
+        params = payload.get("params", {})
+        if not isinstance(action, str) or action not in VALID_ACTIONS:
+            continue
+        if not isinstance(params, dict):
+            return None, "invalid_params"
+        return MedusaAction(action=action, params=params), None
+    if candidates:
+        return None, "invalid_action_or_missing_action_key"
+    return None, "missing_json"
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +340,7 @@ def _generate(model, tokenizer, prompt_text: str) -> str:
     import torch
 
     max_new_tokens = int(os.environ.get("MEDUSA_GRPO_MAX_NEW_TOKENS", "192"))
-    temperature = float(os.environ.get("MEDUSA_GRPO_TEMPERATURE", "0.1"))
+    temperature = float(os.environ.get("MEDUSA_GRPO_TEMPERATURE", "0.0"))
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

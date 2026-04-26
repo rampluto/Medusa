@@ -1421,6 +1421,12 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         optimised for causal LLM reasoning and SFT context length."""
         s = self._state
         
+        profiled = s.profiled_tables_today or {}
+        has_profiled = bool(profiled) if isinstance(profiled, dict) else bool(profiled)
+        # Same signals as `HeuristicPolicy` / golden-path (see `medusa_prompts.SYSTEM_PROMPT`)
+        u_b = float(getattr(s, "uniqueness_b", 1.0) or 1.0)
+        checklist = list(s.day_anomalies.get(s.current_day, []) or [])
+
         prompt = [
             # Day context
             f"=== DAY {s.current_day} PIPELINE STATE ===",
@@ -1428,11 +1434,23 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             f"Current Target Schema: {s.current_contract_columns}",
             f"Total Silver Rows Committed (All Days): {s.silver_row_count}",
             f"Today's Incoming Batch Rows: {s.total_raw_rows}",
+            f"Profiled at least one table today (Heuristic step 0): {'Yes' if has_profiled else 'No'}",
             f"Is deduplication complete for today? {'Yes' if s.did_dedup_today else 'No'}",
+            f"Uniqueness of bronze key (uniqueness_b, for dedup fallback): {u_b:.4f}",
+            f"Schema evolved this day: {'Yes' if s.did_evolve_schema else 'No'}",
+            f"Merge into silver done today: {'Yes' if s.did_merge_today else 'No'}",
+            f"Columns cleaned this day (col, op already applied): {list(s.cleaned_columns_today) or '[]'}",
             "",
-            # Current anomalies block
-            "=== ACTIVE ANOMALIES TODAY ==="
+            # Checklist in **day-file order** — must match `HeuristicPolicy` loop order
+            "=== ANOMALY CHECKLIST (process strictly top to bottom) ===",
         ]
+        if not checklist:
+            prompt.append("-- (empty for this day)")
+        else:
+            for i, (col, raw_op) in enumerate(checklist, start=1):
+                prompt.append(f"{i}. column={col!r}  raw_op={str(raw_op)!r}")
+
+        prompt.extend(["", "=== REMAINING / AGGREGATED (same source as env unhandled) ===", "=== ACTIVE ANOMALIES TODAY ==="])
         
         if not s.unhandled_anomalies_today:
             prompt.append("None. The pipeline is clean. Ready to DEDUPLICATE and EXECUTE_MERGE.")
@@ -1449,7 +1467,10 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         prompt.append("=== PREVIOUS ACTION FEEDBACK ===")
         prompt.append(f"{s.last_action_result}\n" if s.last_action_result else "No previous action taken today.\n")
         
-        prompt.append("Based on the data engineering required, output a valid JSON `MedusaAction` with keys 'action' and 'params'.")
+        prompt.append(
+            "You must follow the Heuristic Golden-Path policy in the system message. "
+            "Reply with exactly one ```json code block: keys \"action\" and \"params\" only."
+        )
         
         return "\n".join(prompt)
 

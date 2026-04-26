@@ -70,7 +70,7 @@ ENV GRPO_MODEL_ID="anubhavkamal/medusa-qwen-grpo"
 ENV MEDUSA_GRPO_LOAD_IN_4BIT="0"
 ENV MEDUSA_GRPO_NO_MERGE="0"
 ENV MEDUSA_GRPO_MAX_NEW_TOKENS="192"
-ENV MEDUSA_GRPO_TEMPERATURE="0.1"
+ENV MEDUSA_GRPO_TEMPERATURE="0.0"
 # T4 16GB: set MEDUSA_GRPO_LOAD_IN_4BIT=1 in Space variables (or rebuild with 1 here)
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

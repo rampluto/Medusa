@@ -37,3 +37,20 @@ arrives as a regular file, replace it with a copy of the root
 
 - GRPO predictor: [`trainer/grpo_predictor_hub.py`](../trainer/grpo_predictor_hub.py)
 - Reference notes (SFT, GRPO, Space variables): [`trainer/README.md`](../trainer/README.md)
+
+## UI showed `Unexpected token 'I', "Internal S"... is not valid JSON`
+
+That was a **frontend** bug: the browser called `response.json()` on **500**
+responses whose body is plain text or HTML (`Internal Server Error`), not
+JSON. The Studio assets have been fixed to read the body as text first and
+only then parse JSON, so you now get a readable error line.
+
+If you still see **500** after redeploying the static files, check **Space →
+Logs** for the real exception. Common causes when using **GRPO Trained**:
+
+| Symptom | Fix |
+|--------|-----|
+| CUDA OOM / `OutOfMemoryError` | Set variable `MEDUSA_GRPO_LOAD_IN_4BIT=1`, or use a larger GPU. |
+| No GPU / CPU Space | GRPO path needs a **GPU** Space; 3B + LoRA will not run on CPU in practice. |
+| 401 / 403 on model download | Add **Secret** `HF_TOKEN`; accept the base model license on the Hub. |
+| Import error for `torch` | Rebuild the image; root `Dockerfile` must include the PyTorch layer. |

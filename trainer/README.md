@@ -159,7 +159,7 @@ Optional knobs (sensible defaults baked into the Dockerfile reference):
 | Variable | `MEDUSA_GRPO_LOAD_IN_4BIT`     | `0`       | `1` → nf4 quantization (saves ~5 GB VRAM, slightly slower). |
 | Variable | `MEDUSA_GRPO_NO_MERGE`         | `0`       | `1` → keep the LoRA adapter wrapped instead of `merge_and_unload()`. |
 | Variable | `MEDUSA_GRPO_MAX_NEW_TOKENS`   | `192`     | Per-step generation budget. |
-| Variable | `MEDUSA_GRPO_TEMPERATURE`      | `0.1`     | Set to `0` for greedy decoding. |
+| Variable | `MEDUSA_GRPO_TEMPERATURE`      | `0.0`     | `0` = greedy (default); raise slightly for diversity. |
 
 ### 2. GPU hardware
 

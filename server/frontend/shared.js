@@ -116,6 +116,40 @@
     };
   }
 
+  /** Parse JSON or return null (e.g. HTML 500 body from uvicorn). */
+  function tryParseJson(text) {
+    const t = (text || "").trim();
+    if (!t) {
+      return null;
+    }
+    try {
+      return JSON.parse(t);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Human-readable error when the server did not return JSON (common on 500:
+   * body starts with "Internal Server Error" or HTML).
+   */
+  function httpErrorMessage(response, text, data) {
+    if (data && data.detail !== undefined) {
+      return typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
+    }
+    const plain = (text || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const snippet = plain.slice(0, 800);
+    return snippet || `${response.status} ${response.statusText}`;
+  }
+
+  async function readFetchBody(response) {
+    const text = await response.text();
+    return { text, data: tryParseJson(text) };
+  }
+
   async function fetchJSON(url, body = null, method = "GET") {
     const options = {
       method,
@@ -129,10 +163,14 @@
     }
 
     const response = await fetch(url, options);
-    const data = await response.json();
+    const { text, data } = await readFetchBody(response);
+
     if (!response.ok) {
-      const message = data.detail ? JSON.stringify(data.detail) : response.statusText;
-      throw new Error(message);
+      throw new Error(httpErrorMessage(response, text, data));
+    }
+
+    if (data === null && text && text.trim()) {
+      throw new Error(`Invalid JSON from ${url}: ${text.slice(0, 200)}`);
     }
     return data;
   }
@@ -295,6 +333,9 @@
   window.MedusaShared = {
     loadCatalog,
     fetchJSON,
+    tryParseJson,
+    httpErrorMessage,
+    readFetchBody,
     getState,
     updateState,
     setTask,
