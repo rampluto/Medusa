@@ -1,9 +1,11 @@
-"""Deterministic MEDUSA agent policies for the custom UI."""
+"""MEDUSA agent policies for the custom UI."""
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import asdict, dataclass
+from importlib import import_module
 from typing import Any, Dict, List, Optional, Type, Union
 
 try:
@@ -19,6 +21,7 @@ except ImportError:
 
 
 PolicyAction = Union[MedusaAction, MedusaActionType]
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -73,23 +76,49 @@ class RandomPolicy(BaseAgentPolicy):
         state: Any,
         observation: Any,
     ) -> PolicyAction:
-        candidates = [
-            MedusaAction(action=MedusaActionType.PROFILE_TABLE.value, params={"table": "bronze"}),
-            MedusaAction(action=MedusaActionType.EXECUTE_MERGE.value, params={}),
-            MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={}),
-        ]
-        return self._random.choice(candidates)
+        action_type = self._random.choice(list(MedusaActionType))
+        LOGGER.debug("random_policy_selected_action action=%s", action_type.value)
+        return MedusaAction(action=action_type.value, params={})
 
 
-class AlwaysCommitPolicy(BaseAgentPolicy):
-    """Immediate-commit lower bound."""
+_HEURISTIC_OP_MAP: Dict[str, str] = {
+    "type_mixed": "cast",
+    "fill_null": "fill_zero",
+    "whitespace": "strip",
+    "negative": "fill_zero",
+}
+
+
+class HeuristicPolicy(BaseAgentPolicy):
+    """Golden-path heuristic policy.
+
+    Implements the reference solution from ``scripts/test_olist_golden_path.py``:
+
+    1. ``PROFILE_TABLE`` bronze once per day.
+    2. Walk the day's anomaly checklist and route each entry to the right action
+       (``CLEAN_COLUMN``/``DEDUPLICATE``/``QUARANTINE_ROWS``/``EVOLVE_SILVER_SCHEMA``).
+    3. Fall back to ``DEDUPLICATE`` if duplicates still remain and none was issued.
+    4. ``EXECUTE_MERGE`` once per day.
+    5. ``COMMIT_DAY`` to close the day.
+
+    The same logic drives both the task auto-run path (``MedusaEnv.state``) and
+    the dataframe cleaner path (``SimpleNamespace`` state built from the upload).
+    """
 
     descriptor = AgentDescriptor(
-        id="always_commit",
-        name="Always Commit",
-        description="Terminates immediately to expose pre-commit audit failures and guardrails.",
-        family="baseline",
-        strengths=["Fastest failure case", "Useful for grader demos"],
+        id="heuristic",
+        name="Heuristic Golden-Path",
+        description=(
+            "Reference solver that profiles the table, resolves each anomaly on the "
+            "day's checklist, deduplicates, merges, and commits — matching the golden "
+            "path from the Olist test suite."
+        ),
+        family="heuristic",
+        strengths=[
+            "Reference upper-bound reward",
+            "Deterministic checklist traversal",
+            "Works on tasks and uploaded dataframes",
+        ],
     )
 
     def select_action(
@@ -99,48 +128,93 @@ class AlwaysCommitPolicy(BaseAgentPolicy):
         state: Any,
         observation: Any,
     ) -> PolicyAction:
-        return MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={})
+        profiled = getattr(state, "profiled_tables_today", {}) or {}
+        has_profiled = bool(profiled) if isinstance(profiled, dict) else bool(profiled)
+        if not has_profiled:
+            LOGGER.debug("heuristic_policy_select profile_bronze")
+            return MedusaAction(action="PROFILE_TABLE", params={"table": "bronze"})
+
+        current_day = getattr(state, "current_day", 1)
+        day_anomalies = getattr(state, "day_anomalies", {}) or {}
+        today = day_anomalies.get(current_day, []) or []
+
+        cleaned_lookup = set()
+        for item in getattr(state, "cleaned_columns_today", []) or []:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                cleaned_lookup.add((item[0], item[1]))
+
+        contract_cols = list(getattr(state, "current_contract_columns", []) or [])
+        did_dedup = bool(getattr(state, "did_dedup_today", False))
+        did_evolve = bool(getattr(state, "did_evolve_schema", False))
+
+        for col, raw_op in today:
+            raw_op_lower = str(raw_op).lower()
+
+            if raw_op_lower in {"deduplicate", "dedup", "duplicate"}:
+                if not did_dedup:
+                    LOGGER.debug("heuristic_policy_select dedup col=%s", col)
+                    return MedusaAction(action="DEDUPLICATE", params={"key": col})
+                continue
+
+            if raw_op_lower == "quarantine":
+                if (col, "quarantine") not in cleaned_lookup:
+                    LOGGER.debug("heuristic_policy_select quarantine col=%s", col)
+                    return MedusaAction(
+                        action="QUARANTINE_ROWS",
+                        params={"table": "bronze", "condition": f"{col} IS NULL"},
+                    )
+                continue
+
+            if raw_op_lower == "evolve":
+                if not did_evolve and (col, "evolve") not in cleaned_lookup:
+                    LOGGER.debug("heuristic_policy_select evolve col=%s", col)
+                    return MedusaAction(
+                        action="EVOLVE_SILVER_SCHEMA",
+                        params={"column": col},
+                    )
+                continue
+
+            mapped_op = _HEURISTIC_OP_MAP.get(raw_op_lower, raw_op_lower)
+            if (col, mapped_op) in cleaned_lookup:
+                continue
+            LOGGER.debug("heuristic_policy_select clean col=%s op=%s", col, mapped_op)
+            return MedusaAction(
+                action="CLEAN_COLUMN",
+                params={"table": "bronze", "col": col, "op": mapped_op},
+            )
+
+        if not did_dedup and float(getattr(state, "uniqueness_b", 1.0) or 1.0) < 1.0:
+            LOGGER.debug("heuristic_policy_select dedup_fallback")
+            return MedusaAction(action="DEDUPLICATE", params={})
+
+        if not bool(getattr(state, "did_merge_today", False)):
+            LOGGER.debug("heuristic_policy_select merge")
+            return MedusaAction(action="EXECUTE_MERGE", params={})
+
+        LOGGER.debug("heuristic_policy_select commit")
+        return MedusaAction(action="COMMIT_DAY", params={})
 
 
-class GovernanceFirstPolicy(BaseAgentPolicy):
-    """A conservative checklist-driven agent."""
+class GrpoTrainedPolicy(BaseAgentPolicy):
+    """GRPO policy wrapper that delegates action prediction to a predictor callable."""
 
     descriptor = AgentDescriptor(
-        id="governance_first",
-        name="Governance First",
+        id="grpo_trained",
+        name="GRPO Trained Agent",
         description=(
-            "Clears freshness, schema drift, key quality, and dedup needs before taking the "
-            "audited left-join plus SCD-2 path."
+            "Executes a deterministic policy aligned with the GRPO training objective for "
+            "stable replay and reproducible audit behavior."
         ),
-        family="heuristic",
-        strengths=["Safe default", "Strong on stale and drift-heavy tasks"],
-    )
-
-    def select_action(
-        self,
-        *,
-        task: Optional[Task],
-        state: Any,
-        observation: Any,
-    ) -> PolicyAction:
-        return _next_v4_action(state)
-
-
-class TaskAwarePlannerPolicy(BaseAgentPolicy):
-    """A higher-scoring deterministic planner that adapts to task intent."""
-
-    descriptor = AgentDescriptor(
-        id="task_aware",
-        name="Task-Aware Planner",
-        description=(
-            "Uses task intent plus live pipeline state to choose the safest audited path, "
-            "including SCD-1 for snapshot tasks and SCD-2 for history-preserving tasks."
-        ),
-        family="heuristic",
-        strengths=["Best general benchmark fit", "Adapts snapshot vs history paths"],
+        family="trained",
+        strengths=["Replay-stable", "Strong benchmark completion"],
         default=True,
     )
 
+    def __init__(self, *, seed: Optional[int] = None) -> None:
+        super().__init__(seed=seed)
+        self._predict_action = _load_grpo_predictor()
+        LOGGER.info("grpo_policy_initialized seed=%s", seed)
+
     def select_action(
         self,
         *,
@@ -148,58 +222,54 @@ class TaskAwarePlannerPolicy(BaseAgentPolicy):
         state: Any,
         observation: Any,
     ) -> PolicyAction:
-        return _next_v4_action(state)
+        predicted = self._predict_action(task=task, state=state, observation=observation)
+        LOGGER.debug("grpo_policy_raw_prediction type=%s", type(predicted).__name__)
+        if isinstance(predicted, MedusaAction):
+            LOGGER.debug("grpo_policy_selected_action action=%s", predicted.action)
+            return predicted
+        if isinstance(predicted, MedusaActionType):
+            LOGGER.debug("grpo_policy_selected_action action=%s", predicted.value)
+            return MedusaAction(action=predicted.value, params={})
+        action_name = str(predicted)
+        if action_name not in {action.value for action in MedusaActionType}:
+            LOGGER.error("grpo_policy_unknown_action action=%s", action_name)
+            raise ValueError(f"GRPO predictor returned unknown action {action_name!r}.")
+        LOGGER.debug("grpo_policy_selected_action action=%s", action_name)
+        return MedusaAction(action=action_name, params={})
 
 
-def _next_v4_action(state: Any) -> MedusaAction:
-    current_day = getattr(state, "current_day", 1)
-    anomalies = list(getattr(state, "day_anomalies", {}).get(current_day, []))
+def _load_grpo_predictor() -> Any:
+    """Load a configured GRPO action predictor from MEDUSA_GRPO_PREDICTOR."""
+    import os
 
-    if not getattr(state, "profiled_tables_today", {}).get("bronze"):
-        return MedusaAction(action=MedusaActionType.PROFILE_TABLE.value, params={"table": "bronze"})
-
-    for column, operation in anomalies:
-        if operation in {"strip", "cast", "fill_zero"}:
-            if (column, operation) not in getattr(state, "cleaned_columns_today", set()):
-                return MedusaAction(
-                    action=MedusaActionType.CLEAN_COLUMN.value,
-                    params={"table": "bronze", "col": column, "op": operation},
-                )
-        elif operation == "deduplicate" and not getattr(state, "did_dedup_today", False):
-            return MedusaAction(
-                action=MedusaActionType.DEDUPLICATE.value,
-                params={"table": "bronze", "key": column},
-            )
-        elif operation == "evolve" and column not in getattr(state, "current_contract_columns", []):
-            return MedusaAction(
-                action=MedusaActionType.EVOLVE_SILVER_SCHEMA.value,
-                params={"column": column},
-            )
-        elif operation == "quarantine" and getattr(state, "day28_quarantine_rows", 0) == 0:
-            return MedusaAction(
-                action=MedusaActionType.QUARANTINE_ROWS.value,
-                params={"table": "bronze", "condition": f"{column} IS NULL"},
-            )
-
-    if getattr(state, "uniqueness_b", 1.0) < 1.0 and not getattr(state, "did_dedup_today", False):
-        return MedusaAction(
-            action=MedusaActionType.DEDUPLICATE.value,
-            params={"table": "bronze", "key": "user_id"},
+    entrypoint = os.getenv("MEDUSA_GRPO_PREDICTOR", "").strip()
+    if not entrypoint:
+        LOGGER.error("grpo_predictor_missing_env MEDUSA_GRPO_PREDICTOR is not set")
+        raise RuntimeError(
+            "grpo_trained agent requires MEDUSA_GRPO_PREDICTOR='module:function' to be configured."
         )
-
-    if not getattr(state, "did_merge_today", False):
-        return MedusaAction(action=MedusaActionType.EXECUTE_MERGE.value, params={})
-
-    return MedusaAction(action=MedusaActionType.COMMIT_DAY.value, params={})
+    module_name, separator, function_name = entrypoint.partition(":")
+    if not separator or not module_name or not function_name:
+        raise RuntimeError(
+            "Invalid MEDUSA_GRPO_PREDICTOR format. Expected 'module:function'."
+        )
+    module = import_module(module_name)
+    predictor = getattr(module, function_name, None)
+    if predictor is None or not callable(predictor):
+        LOGGER.error("grpo_predictor_invalid entrypoint=%s", entrypoint)
+        raise RuntimeError(
+            f"Configured GRPO predictor '{entrypoint}' is missing or not callable."
+        )
+    LOGGER.info("grpo_predictor_loaded entrypoint=%s", entrypoint)
+    return predictor
 
 
 AGENT_REGISTRY: Dict[str, Type[BaseAgentPolicy]] = {
     policy.descriptor.id: policy
     for policy in (
         RandomPolicy,
-        AlwaysCommitPolicy,
-        GovernanceFirstPolicy,
-        TaskAwarePlannerPolicy,
+        HeuristicPolicy,
+        GrpoTrainedPolicy,
     )
 }
 
@@ -215,7 +285,9 @@ def build_agent(agent_id: str, *, seed: Optional[int] = None) -> BaseAgentPolicy
     try:
         policy_cls = AGENT_REGISTRY[agent_id]
     except KeyError as exc:
+        LOGGER.error("build_agent_unknown_id agent_id=%s", agent_id)
         raise ValueError(f"Unknown agent_id={agent_id!r}.") from exc
+    LOGGER.info("build_agent agent_id=%s seed=%s policy=%s", agent_id, seed, policy_cls.__name__)
     return policy_cls(seed=seed)
 
 

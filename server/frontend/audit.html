@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MEDUSA Audit Report</title>
-    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-grid-stable-20260423" />
+    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-dq-20260426b" />
   </head>
   <body data-page="audit">
     <div class="shell shell--wide">
@@ -18,72 +18,23 @@
         <div class="topbar__meta" id="topbar-meta"></div>
       </nav>
 
-      <header class="hero hero--audit">
-        <div class="hero__copy">
-          <p class="eyebrow">Audit Report</p>
-          <h1>Audit Report</h1>
-          <p class="hero__lede">
-            Review commit readiness, grader output, rubric score, trace context, and feature signals
-            in a clean grid.
-          </p>
-        </div>
-        <aside class="hero__aside">
-          <div class="hero__status" id="audit-status">
-            <span class="status-pill">Loading active trace</span>
-          </div>
-          <div class="hero-card">
-            <span class="hero-card__label">Audit Lens</span>
-            <strong>Separate “looks fine” from “actually passes the deterministic rules.”</strong>
-            <p>The grader, rubric, and feature vector sit together so human review and RL state stay aligned.</p>
-          </div>
-        </aside>
-      </header>
+      <main class="workspace audit-stack">
 
-      <main class="workspace workspace--audit">
-        <section class="panel panel--audit-summary">
+        <!-- ── Grader Report ─────────────────────────────────── -->
+        <section class="panel audit-panel audit-panel--grader">
           <div class="panel__header">
-            <h2>Audit Dashboard</h2>
-            <p>Run status, score, readiness, and blocking conditions.</p>
-          </div>
-          <div id="audit-summary" class="audit-dashboard-grid"></div>
-        </section>
-
-        <section class="panel panel--audit-page">
-          <div class="panel__header">
-            <h2>Grader Report</h2>
-            <p>Deterministic checks and report lines.</p>
+            <div>
+              <h2>Grader Report</h2>
+              <p>Deterministic checks and grader lines for the current episode.</p>
+            </div>
           </div>
           <div id="grader-report" class="audit-report-grid"></div>
         </section>
 
-        <section class="panel panel--audit-trace">
-          <div class="panel__header">
-            <h2>Trace Snapshot</h2>
-            <p>What the browser currently intends to replay.</p>
-          </div>
-          <div id="audit-trace" class="audit-trace-grid"></div>
-        </section>
-
-        <section class="panel panel--audit-rubric">
-          <div class="panel__header">
-            <h2>Rubric Matrix</h2>
-            <p>Task score broken into individual criteria.</p>
-          </div>
-          <div id="evaluation-breakdown" class="rubric-matrix"></div>
-        </section>
-
-        <section class="panel panel--audit-features">
-          <div class="panel__header">
-            <h2>Feature Vector</h2>
-            <p>The 16-element normalized RL state translated into readable cards.</p>
-          </div>
-          <div id="feature-grid" class="feature-grid"></div>
-        </section>
       </main>
-
     </div>
 
     <script src="/medusa-static/shared.js"></script>
-    <script src="/medusa-static/audit.js?v=medusa-grid-stable-20260423"></script>
+    <script src="/medusa-static/audit.js?v=medusa-dq-20260426b"></script>
   </body>
 </html>

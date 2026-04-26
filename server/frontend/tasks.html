@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MEDUSA Task Catalog</title>
-    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-grid-20260423" />
+    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-simplified-20260426" />
   </head>
   <body data-page="catalog">
     <div class="shell shell--wide">
@@ -18,55 +18,18 @@
         <div class="topbar__meta" id="topbar-meta"></div>
       </nav>
 
-      <header class="hero hero--catalog">
-        <div class="hero__copy">
-          <p class="eyebrow">Task Catalog</p>
-          <h1>Choose the failure mode you want to tame</h1>
-          <p class="hero__lede">
-            MEDUSA benchmarks are deterministic challenge tracks. Pick a task, understand its rubric,
-            then jump into the live playground to build a trace against it.
-          </p>
-        </div>
-        <aside class="hero__aside">
-          <div class="hero__status" id="catalog-status">
-            <span class="status-pill">Loading tasks</span>
-          </div>
-          <div class="hero-card">
-            <span class="hero-card__label">Why Start Here</span>
-            <strong>Match the agent to the failure mode before you open the Studio.</strong>
-            <p>Every task here is deterministic, so visual comparison is actually meaningful.</p>
-          </div>
-        </aside>
-      </header>
-
-      <main class="workspace workspace--catalog">
-        <section class="panel panel--rail panel--catalog-current">
+      <main class="workspace">
+        <section class="panel panel--catalog-tasks">
           <div class="panel__header">
-            <h2>Current Trace</h2>
-            <p>The browser keeps the active task and action history locally.</p>
-          </div>
-          <div id="catalog-current" class="stack"></div>
-        </section>
-
-        <section class="panel panel--main panel--catalog-tasks">
-          <div class="panel__header">
-            <h2>Available Tasks</h2>
-            <p>Each card shows the deterministic seed, difficulty, and scoring intent.</p>
+            <h2>Tasks List</h2>
+            <p>Select a task from the grid to open Medusa page.</p>
           </div>
           <div id="task-cards" class="task-cards"></div>
-        </section>
-
-        <section class="panel panel--side panel--catalog-signals">
-          <div class="panel__header">
-            <h2>Catalog Signals</h2>
-            <p>Difficulty mix, current task focus, and launch context.</p>
-          </div>
-          <div id="catalog-insights" class="stack"></div>
         </section>
       </main>
     </div>
 
     <script src="/medusa-static/shared.js"></script>
-    <script src="/medusa-static/tasks.js?v=medusa-grid-20260423"></script>
+    <script src="/medusa-static/tasks.js?v=medusa-simplified-20260426"></script>
   </body>
 </html>

@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import logging
 import math
+import sys
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from types import SimpleNamespace
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+# Ensure the repo root is on sys.path so data_quality_score can be imported
+_REPO_ROOT = str(Path(__file__).resolve().parent.parent)
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 try:
     from ..models import MedusaAction, MedusaActionType
@@ -63,99 +73,7 @@ AVAILABLE_TABLES = (
     "quarantine",
 )
 DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
-
-ACTION_METADATA: Dict[MedusaActionType, Dict[str, str]] = {
-    MedusaActionType.PROFILE_TABLE: {
-        "category": "inspect",
-        "label": "Profile Table",
-        "description": "Inspect today's Bronze batch for schema, nulls, types, and duplicate signals.",
-    },
-    MedusaActionType.CLEAN_COLUMN: {
-        "category": "clean",
-        "label": "Clean Column",
-        "description": "Apply a specific cast, strip, or fill operation to a dirty column.",
-    },
-    MedusaActionType.DEDUPLICATE: {
-        "category": "clean",
-        "label": "Deduplicate",
-        "description": "Remove duplicate rows from today's batch before merging.",
-    },
-    MedusaActionType.EVOLVE_SILVER_SCHEMA: {
-        "category": "schema",
-        "label": "Evolve Silver Schema",
-        "description": "Add a drifted column from today's Bronze batch to the Silver data contract.",
-    },
-    MedusaActionType.QUARANTINE_ROWS: {
-        "category": "quality",
-        "label": "Quarantine Rows",
-        "description": "Route unsalvageable rows, such as null primary keys, into quarantine.",
-    },
-    MedusaActionType.EXECUTE_MERGE: {
-        "category": "merge",
-        "label": "Execute Merge",
-        "description": "Merge today's cleaned batch into the cumulative Silver table.",
-    },
-    MedusaActionType.COMMIT_DAY: {
-        "category": "finalize",
-        "label": "Commit Day",
-        "description": "Run the deterministic grader for the day and advance the episode clock.",
-    },
-    MedusaActionType.SYNC_CHECK: {
-        "category": "freshness",
-        "label": "Sync Check",
-        "description": "Verify how stale each Bronze source is before doing downstream work.",
-    },
-    MedusaActionType.EVOLVE_SCHEMA: {
-        "category": "schema",
-        "label": "Evolve Schema",
-        "description": "Add drifted columns from Bronze A and B into Silver before materializing data.",
-    },
-    MedusaActionType.PREP_KEYS_A: {
-        "category": "keys",
-        "label": "Prep Keys A",
-        "description": "Normalize and clean the join key on Source A.",
-    },
-    MedusaActionType.PREP_KEYS_B: {
-        "category": "keys",
-        "label": "Prep Keys B",
-        "description": "Normalize and clean the join key on Source B.",
-    },
-    MedusaActionType.DEDUPLICATE_B: {
-        "category": "keys",
-        "label": "Deduplicate B",
-        "description": "Remove duplicate dimension keys to avoid join explosions.",
-    },
-    MedusaActionType.EXECUTE_JOIN_INNER: {
-        "category": "join",
-        "label": "Inner Join",
-        "description": "Join matched rows only; useful when unmatched facts can be dropped.",
-    },
-    MedusaActionType.EXECUTE_JOIN_LEFT: {
-        "category": "join",
-        "label": "Left Join",
-        "description": "Preserve all fact rows and quarantine true orphans for auditability.",
-    },
-    MedusaActionType.EXECUTE_JOIN_ANTI: {
-        "category": "join",
-        "label": "Anti Join",
-        "description": "Extract only fact rows with no match in the dimension.",
-    },
-    MedusaActionType.APPLY_SCD_1: {
-        "category": "history",
-        "label": "Apply SCD-1",
-        "description": "Overwrite existing Silver records in snapshot-style loads.",
-    },
-    MedusaActionType.APPLY_SCD_2: {
-        "category": "history",
-        "label": "Apply SCD-2",
-        "description": "Maintain history with valid_from / valid_to windows.",
-    },
-    MedusaActionType.COMMIT: {
-        "category": "finalize",
-        "label": "Commit",
-        "description": "Finalize the episode and run the deterministic audit.",
-    },
-}
+LOGGER = logging.getLogger(__name__)
 
 FEATURE_LABELS = [
     "day_frac",
@@ -298,6 +216,196 @@ class AutoRunRequest(BaseModel):
         return self
 
 
+def _detect_cleaning_anomalies(df: pd.DataFrame) -> List[Tuple[str, str]]:
+    """Infer a day-1 style anomaly checklist directly from an uploaded CSV.
+
+    Emits raw-op labels (``whitespace``/``type_mixed``/``fill_null``/``quarantine``/
+    ``deduplicate``) that heuristic/checklist-driven policies already know how to
+    translate into concrete MEDUSA actions.
+    """
+    anomalies: List[Tuple[str, str]] = []
+    if df is None or df.empty:
+        return anomalies
+
+    for col in df.columns:
+        series = df[col]
+        if series.dtype == object:
+            non_null = series.dropna().astype(str)
+            if len(non_null) > 0 and (non_null != non_null.str.strip()).any():
+                anomalies.append((col, "whitespace"))
+            if len(non_null) > 0 and not pd.api.types.is_numeric_dtype(series):
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                hit_rate = float(numeric.notna().mean()) if len(numeric) else 0.0
+                if 0.2 < hit_rate < 1.0:
+                    anomalies.append((col, "type_mixed"))
+        if pd.api.types.is_numeric_dtype(series) and series.isna().any():
+            anomalies.append((col, "fill_null"))
+
+    null_keyish = [
+        col
+        for col in df.columns
+        if ("id" in col.lower() or "key" in col.lower()) and df[col].isna().any()
+    ]
+    for col in null_keyish:
+        anomalies.append((col, "quarantine"))
+
+    if df.duplicated().any():
+        pk = df.columns[0] if len(df.columns) else ""
+        anomalies.append((pk, "deduplicate"))
+
+    return anomalies
+
+
+def _build_cleaning_state(df: pd.DataFrame) -> SimpleNamespace:
+    detected = _detect_cleaning_anomalies(df)
+    has_duplicates = bool(df.duplicated().any()) if not df.empty else False
+    return SimpleNamespace(
+        current_day=1,
+        day_anomalies={1: detected},
+        cleaned_columns_today=[],
+        profiled_tables_today={},
+        did_dedup_today=False,
+        did_evolve_schema=False,
+        current_contract_columns=list(df.columns),
+        day28_quarantine_rows=0,
+        uniqueness_b=0.5 if has_duplicates else 1.0,
+        did_merge_today=False,
+    )
+def _apply_cleaning_action(
+    df: pd.DataFrame, state: SimpleNamespace, action: MedusaAction
+) -> Tuple[pd.DataFrame, str]:
+    LOGGER.debug("clean_apply_action_start action=%s params=%s", action.action, action.params)
+    try:
+        action_type = MedusaActionType(action.action)
+    except ValueError:
+        LOGGER.warning("clean_apply_action_unsupported action=%s", action.action)
+        return df, f"Ignored unsupported action '{action.action}'."
+
+    if action_type == MedusaActionType.PROFILE_TABLE:
+        state.profiled_tables_today["bronze"] = 1
+        return df, f"Profiled uploaded table ({len(df)} row(s), {len(df.columns)} column(s))."
+
+    if action_type == MedusaActionType.CLEAN_COLUMN:
+        column = str(action.params.get("col") or "")
+        operation = str(action.params.get("op") or "")
+        if not column or column not in df.columns or not operation:
+            return df, "Skipped CLEAN_COLUMN because params were incomplete or invalid."
+        if operation == "strip":
+            df[column] = df[column].astype(str).str.strip()
+            df[column] = df[column].replace({"": pd.NA, "nan": pd.NA, "None": pd.NA})
+        elif operation == "cast":
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+        elif operation == "fill_zero":
+            as_numeric = pd.to_numeric(df[column], errors="coerce")
+            if as_numeric.notna().any():
+                df[column] = as_numeric.fillna(0)
+        else:
+            return df, f"Skipped CLEAN_COLUMN because op '{operation}' is unsupported."
+        state.cleaned_columns_today.append((column, operation))
+        return df, f"Applied CLEAN_COLUMN on '{column}' with op '{operation}'."
+
+    if action_type == MedusaActionType.DEDUPLICATE:
+        key = str(action.params.get("key") or "")
+        before = len(df)
+        if key and key in df.columns:
+            deduped = df.drop_duplicates(subset=[key]).reset_index(drop=True)
+        else:
+            deduped = df.drop_duplicates().reset_index(drop=True)
+        removed = int(before - len(deduped))
+        state.did_dedup_today = True
+        return deduped, f"Deduplicated rows using key '{key or 'all_columns'}' ({removed} removed)."
+
+    if action_type == MedusaActionType.QUARANTINE_ROWS:
+        condition = str(action.params.get("condition") or "")
+        target_column = condition.split(" IS NULL")[0].strip() if " IS NULL" in condition else ""
+        if target_column and target_column in df.columns:
+            before = len(df)
+            filtered = df[df[target_column].notna()].reset_index(drop=True)
+            removed = int(before - len(filtered))
+            state.day28_quarantine_rows += removed
+            return filtered, f"Quarantined {removed} row(s) where '{target_column}' is null."
+        return df, f"Skipped quarantine; unsupported condition '{condition}'."
+
+    if action_type == MedusaActionType.EVOLVE_SILVER_SCHEMA:
+        candidate = str(action.params.get("column") or "")
+        if candidate and candidate in df.columns and candidate not in state.current_contract_columns:
+            state.current_contract_columns.append(candidate)
+            return df, f"Evolved schema to include '{candidate}'."
+        return df, "Schema already compatible; no evolution needed."
+
+    if action_type == MedusaActionType.EXECUTE_MERGE:
+        state.did_merge_today = True
+        return df, "Executed merge stage for cleaned dataframe."
+
+    if action_type == MedusaActionType.COMMIT_DAY:
+        return df, "Committed cleaning run."
+
+    return df, f"No cleaning executor mapped for action '{action_type.value}'."
+
+
+def _clean_dataframe_with_agent(df: pd.DataFrame, agent_id: str) -> Tuple[pd.DataFrame, List[Dict[str, str]]]:
+    cleaned = df.copy()
+    state = _build_cleaning_state(cleaned)
+    policy = build_agent(agent_id, seed=None)
+    observation = SimpleNamespace(done=False, features=[], metrics={}, metadata={})
+    trace: List[Dict[str, str]] = []
+    # Scale the budget with file complexity: profile + up to 2 ops per column + dedup + merge + commit
+    max_steps = max(10, len(cleaned.columns) * 2 + 5)
+    LOGGER.info(
+        "clean_run_start agent_id=%s input_rows=%s input_cols=%s max_steps=%s",
+        agent_id,
+        len(cleaned),
+        len(cleaned.columns),
+        max_steps,
+    )
+
+    for step_idx in range(max_steps):
+        selected_action = policy.select_action(task=None, state=state, observation=observation)
+        if isinstance(selected_action, MedusaAction):
+            next_action = selected_action
+        else:
+            next_action = MedusaAction(action=selected_action.value, params={})
+        LOGGER.info(
+            "clean_policy_action step=%s agent_id=%s action=%s params=%s",
+            step_idx + 1,
+            agent_id,
+            next_action.action,
+            next_action.params,
+        )
+        cleaned, result_message = _apply_cleaning_action(cleaned, state, next_action)
+        LOGGER.info(
+            "clean_action_result step=%s action=%s rows=%s message=%s",
+            step_idx + 1,
+            next_action.action,
+            len(cleaned),
+            result_message,
+        )
+        trace.append(
+            {
+                "agent_id": agent_id,
+                "action": (
+                    f"{next_action.action} {json.dumps(next_action.params, sort_keys=True)}"
+                    f" -> {result_message}"
+                ),
+            }
+        )
+        if next_action.action == MedusaActionType.COMMIT_DAY.value:
+            LOGGER.info("clean_run_commit_reached step=%s", step_idx + 1)
+            break
+
+    if not trace:
+        trace.append({"agent_id": agent_id, "action": "Agent produced no actions for this file."})
+        LOGGER.warning("clean_run_no_actions agent_id=%s", agent_id)
+
+    LOGGER.info(
+        "clean_run_done agent_id=%s output_rows=%s trace_steps=%s",
+        agent_id,
+        len(cleaned),
+        len(trace),
+    )
+    return cleaned.reset_index(drop=True), trace
+
+
 def register_custom_routes(app: FastAPI) -> None:
     """Attach MEDUSA-specific API and frontend routes to the OpenEnv app."""
     router = APIRouter(prefix="/api", tags=["Medusa UI"])
@@ -321,7 +429,6 @@ def register_custom_routes(app: FastAPI) -> None:
             "actions": [
                 {
                     "action": action.value,
-                    **ACTION_METADATA[action],
                 }
                 for action in MedusaActionType
             ]
@@ -349,7 +456,14 @@ def register_custom_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail=f"Unknown task_id={task_id!r}.")
 
         seed = task.seed
-        policy = build_agent(request.agent_id, seed=seed)
+        LOGGER.info("autorun_start task_id=%s agent_id=%s seed=%s", task_id, request.agent_id, seed)
+        try:
+            # Pass seed=None so stochastic policies (e.g. RandomPolicy) are truly
+            # non-deterministic across runs. The task seed is only for the env reset.
+            policy = build_agent(request.agent_id, seed=None)
+        except (RuntimeError, ValueError) as exc:
+            LOGGER.exception("autorun_build_agent_failed task_id=%s agent_id=%s", task_id, request.agent_id)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         actions: List[MedusaAction] = []
         agent_steps = 0
         max_agent_steps = 300
@@ -368,6 +482,13 @@ def register_custom_routes(app: FastAPI) -> None:
                     next_action = selected_action
                 else:
                     next_action = MedusaAction(action=selected_action.value, params={})
+                LOGGER.debug(
+                    "autorun_step task_id=%s step=%s action=%s params=%s",
+                    task_id,
+                    agent_steps + 1,
+                    next_action.action,
+                    next_action.params,
+                )
 
                 observation = env.step(next_action)
                 actions.append(next_action)
@@ -387,7 +508,109 @@ def register_custom_routes(app: FastAPI) -> None:
             "terminated_early": terminated_early,
             "max_agent_steps": max_agent_steps,
         }
+        LOGGER.info(
+            "autorun_done task_id=%s agent_id=%s steps=%s completed=%s terminated_early=%s",
+            task_id,
+            request.agent_id,
+            agent_steps,
+            bool(payload["summary"]["done"]),
+            terminated_early,
+        )
         return payload
+
+    @router.post("/run/clean-dataframe")
+    async def clean_dataframe(
+        agent_id: str = Form(...),
+        file: UploadFile = File(...),
+    ) -> Dict[str, Any]:
+        if agent_id not in AGENT_REGISTRY:
+            raise HTTPException(status_code=422, detail=f"Unknown agent_id={agent_id!r}.")
+        if not file.filename or not file.filename.lower().endswith(".csv"):
+            raise HTTPException(status_code=422, detail="Upload a CSV file.")
+        LOGGER.info("clean_endpoint_start agent_id=%s filename=%s", agent_id, file.filename)
+
+        raw_bytes = await file.read()
+        try:
+            source_df = pd.read_csv(pd.io.common.BytesIO(raw_bytes))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.exception("clean_endpoint_parse_failed agent_id=%s filename=%s", agent_id, file.filename)
+            raise HTTPException(status_code=422, detail=f"Could not parse CSV: {exc}") from exc
+
+        try:
+            cleaned_df, action_trace = _clean_dataframe_with_agent(source_df, agent_id)
+        except (RuntimeError, ValueError) as exc:
+            LOGGER.exception("clean_endpoint_agent_failed agent_id=%s filename=%s", agent_id, file.filename)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        output_csv = cleaned_df.to_csv(index=False)
+        source_name = Path(file.filename).stem
+        LOGGER.info(
+            "clean_endpoint_done agent_id=%s filename=%s input_rows=%s output_rows=%s trace_steps=%s",
+            agent_id,
+            file.filename,
+            len(source_df),
+            len(cleaned_df),
+            len(action_trace),
+        )
+        return {
+            "agent_id": agent_id,
+            "input_rows": int(len(source_df)),
+            "output_rows": int(len(cleaned_df)),
+            "output_filename": f"{source_name}_cleaned_{agent_id}.csv",
+            "cleaned_csv": output_csv,
+            "action_trace": action_trace,
+        }
+
+    @router.post("/run/score-dataframes")
+    async def score_dataframes_endpoint(
+        source: UploadFile = File(...),
+        cleaned: UploadFile = File(None),
+    ) -> Dict[str, Any]:
+        """Score source and (optionally) cleaned CSV files with data_quality_score."""
+        try:
+            dqs = importlib.import_module("data_quality_score")
+        except ModuleNotFoundError as exc:
+            LOGGER.exception("score_dataframes_module_missing")
+            raise HTTPException(status_code=501, detail="data_quality_score module not found.") from exc
+
+        async def _score_upload(upload: UploadFile) -> Dict[str, Any]:
+            raw = await upload.read()
+            with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+                tmp.write(raw)
+                tmp_path = Path(tmp.name)
+            try:
+                return dqs.score_csv(tmp_path)
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+        source_result = await _score_upload(source)
+        cleaned_result = await _score_upload(cleaned) if cleaned is not None else None
+
+        def _extract(result: Dict[str, Any]) -> Dict[str, Any]:
+            d = result.get("details", {})
+            return {
+                "score": result.get("score", 0.0),
+                "passed": result.get("passed", False),
+                "rows": d.get("rows", 0),
+                "columns": d.get("columns", 0),
+                "missing_cells": d.get("completeness", {}).get("missing_cells", 0),
+                "missing_ratio": d.get("completeness", {}).get("missing_ratio", 0.0),
+                "nan_values": d.get("numeric_sanity", {}).get("nan_values", 0),
+                "null_values": d.get("numeric_sanity", {}).get("null_values", 0),
+                "duplicate_rows": d.get("uniqueness", {}).get("duplicate_rows", 0),
+                "duplicate_ratio": d.get("uniqueness", {}).get("duplicate_ratio", 0.0),
+                "duplicate_column_names": d.get("column_quality", {}).get("duplicate_column_names", 0),
+                "duplicate_column_groups": d.get("column_quality", {}).get("duplicate_column_groups", {}),
+                "dirty_string_cells": d.get("string_cleanliness", {}).get("dirty_string_cells", 0),
+                "dirty_string_ratio": d.get("string_cleanliness", {}).get("dirty_string_ratio", 0.0),
+                "bad_numeric_cells": d.get("numeric_sanity", {}).get("bad_numeric_cells", 0),
+                "component_scores": result.get("component_scores", {}),
+                "column_names": d.get("column_names", []),
+            }
+
+        return {
+            "source": _extract(source_result),
+            "cleaned": _extract(cleaned_result) if cleaned_result is not None else None,
+        }
 
     @router.post("/run/step")
     async def step_run(request: StepTraceRequest) -> Dict[str, Any]:
@@ -496,7 +719,6 @@ def _serialize_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         {
             "action": action["action"],
             "params": action.get("params", {}),
-            "category": ACTION_METADATA[MedusaActionType(action["action"])]["category"],
         }
         for action in actions
     ]

@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MEDUSA Episode Studio</title>
-    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-grid-stable-20260423" />
+    <title>MEDUSA</title>
+    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-heuristic-20260426" />
   </head>
   <body data-page="studio">
     <div class="shell shell--wide">
@@ -18,38 +18,15 @@
         <div class="topbar__meta" id="topbar-meta"></div>
       </nav>
 
-      <header class="hero hero--studio">
-        <div class="hero__copy">
-          <p class="eyebrow">Episode Studio</p>
-          <h1>Medusa Live Playground</h1>
-          <p class="hero__lede">
-            Pick a task and a built-in MEDUSA agent. The run executes automatically, then the
-            control room updates the trace, tables, timeline, and audit outputs without backend
-            session state or manual stepping.
-          </p>
-        </div>
-        <aside class="hero__aside">
+      <main class="workspace">
+        <section class="panel">
+          <div class="panel__header">
+            <h2>Medusa</h2>
+            <p>Select task and agent, run, then upload and clean your dataframe.</p>
+          </div>
+
           <div class="hero__status" id="hero-status">
             <span class="status-pill">Loading task catalog</span>
-          </div>
-          <div class="hero-card">
-            <span class="hero-card__label">Control Room</span>
-            <strong>One task, one selected agent, one fully replayable trace.</strong>
-            <p>Run it, inspect it, and move from pipeline state to final audit without hidden server sessions.</p>
-          </div>
-        </aside>
-      </header>
-
-      <main class="workspace workspace--studio">
-        <section class="panel panel--rail panel--controls">
-          <div class="panel__header">
-            <h2>Automation</h2>
-            <p>Select a task and agent, then let the replay run itself.</p>
-          </div>
-
-          <div class="control-callout">
-            <span class="metric-badge">Stateless Replay</span>
-            <p>The browser stores the active task and trace while the server deterministically rebuilds each run.</p>
           </div>
 
           <div class="control-row">
@@ -66,8 +43,6 @@
             <button id="rerun-agent" class="button button--ghost">Run Selected Agent</button>
           </div>
 
-          <div id="task-meta" class="task-meta"></div>
-
           <div class="trace-box">
             <div class="trace-box__header">
               <h3>Action Trace</h3>
@@ -75,65 +50,45 @@
             </div>
             <ol id="trace-list" class="trace-list"></ol>
           </div>
-        </section>
-
-        <div class="workspace__mainstack">
-          <section class="panel panel--main panel--overview">
-            <div class="panel__header">
-              <h2>Episode Overview</h2>
-              <p>Current observation, derived health, and run summary.</p>
+          <section class="trace-box">
+            <div class="trace-box__header">
+              <h3>Dataframe Cleaner</h3>
             </div>
-
-            <div id="summary-cards" class="summary-grid"></div>
-
-            <div class="story-grid">
-              <article class="story-card">
-                <h3>Observation</h3>
-                <p id="observation-message" class="story-card__body"></p>
-              </article>
-              <article class="story-card">
-                <h3>Commit Readiness</h3>
-                <div id="analysis-commit" class="stack"></div>
-              </article>
+            <div class="control-row">
+              <label for="df-upload">Upload CSV</label>
+              <input id="df-upload" type="file" accept=".csv,text/csv" />
             </div>
-
-            <article class="story-card">
-              <h3>Agent Strategy</h3>
-              <div id="agent-brief" class="stack"></div>
-            </article>
-          </section>
-
-          <section class="panel panel--wide panel--tables">
-            <div class="panel__header">
-              <h2>Table Explorer</h2>
-              <p>Inspect Bronze, prepped, joined, Silver, and quarantine outputs.</p>
+            <div class="control-row">
+              <button id="clean-df" class="button">Clean Using Selected Agent</button>
             </div>
-
-            <div class="toolbar">
-              <label for="table-select">Table</label>
-              <select id="table-select"></select>
-              <button id="page-prev" class="button button--ghost">Prev</button>
-              <button id="page-next" class="button button--ghost">Next</button>
-              <span id="table-pagination" class="toolbar__meta"></span>
+            <div id="clean-status" class="stack"></div>
+            <div class="trace-box" style="margin-top: 0.75rem;">
+              <div class="trace-box__header">
+                <h3>Cleaning Action Trace</h3>
+                <span id="clean-trace-count">0 steps</span>
+              </div>
+              <ol id="clean-trace-list" class="trace-list">
+                <li class="empty">Upload a CSV and run cleaning to view trace steps.</li>
+              </ol>
             </div>
-
-            <div class="table-wrap">
-              <table id="data-table" class="data-table"></table>
+            <div class="action-row">
+              <a id="download-cleaned" class="button button--ghost" href="#" download style="display:none;">Download Cleaned CSV</a>
             </div>
           </section>
-        </div>
 
-        <section class="panel panel--side panel--timeline">
-          <div class="panel__header">
-            <h2>Timeline</h2>
-            <p>Every replayed decision, reward change, and operator payload.</p>
-          </div>
-          <div id="timeline-list" class="timeline"></div>
+          <!-- ── Data Quality Report ── -->
+          <section id="dq-section" class="trace-box" style="display:none; margin-top: 1rem;">
+            <div class="trace-box__header">
+              <h3>Data Quality Report</h3>
+              <div id="dq-status-studio" class="dq-status-pills"></div>
+            </div>
+            <div id="dq-grid-studio"></div>
+          </section>
         </section>
       </main>
     </div>
 
     <script src="/medusa-static/shared.js"></script>
-    <script src="/medusa-static/studio.js?v=medusa-grid-stable-20260423"></script>
+    <script src="/medusa-static/studio.js?v=medusa-heuristic-20260426"></script>
   </body>
 </html>
