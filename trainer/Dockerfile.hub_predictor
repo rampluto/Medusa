@@ -71,9 +71,7 @@ ENV PORT=7860 \
     # "Variables and secrets" panel without rebuilding the image.
     MEDUSA_GRPO_PREDICTOR="trainer.grpo_predictor_hub:predict" \
     BASE_MODEL_ID="Qwen/Qwen2.5-3B-Instruct" \
-    # GRPO_MODEL_ID is INTENTIONALLY unset here — set it as a Space
-    # Variable (e.g. myuser/medusa-qwen-grpo). HF_TOKEN should be a
-    # Space Secret, not a Variable.
+    GRPO_MODEL_ID="anubhavkamal/medusa-qwen-grpo" \
     MEDUSA_GRPO_LOAD_IN_4BIT="0" \
     MEDUSA_GRPO_NO_MERGE="0" \
     MEDUSA_GRPO_MAX_NEW_TOKENS="192" \

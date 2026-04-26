@@ -18,6 +18,10 @@ app_port: 7860
 
 An OpenEnv reinforcement learning environment that trains agents to act as *Relational Controllers* — orchestrating multi-source Bronze→Silver data integration pipelines inside a Medallion Architecture.
 
+### Hugging Face Space (Docker)
+
+The root **`Dockerfile`** is built by Spaces (`sdk: docker`, port **7860**). It includes the **GRPO Hub predictor** with defaults: `GRPO_MODEL_ID=anubhavkamal/medusa-qwen-grpo`, `BASE_MODEL_ID=Qwen/Qwen2.5-3B-Instruct`, `MEDUSA_GRPO_PREDICTOR=trainer.grpo_predictor_hub:predict`. In the Space, enable a **GPU** (T4 or better). After deploy, open **`/medusa/studio`**, select **GRPO Trained**, and run **Auto-run**. If downloads fail (gated model or private adapter), add **`HF_TOKEN`** as a Space *Secret* — see **`trainer/README.md`**. Deploy layout: **`hf_space/README.md`** (`hf_space/Dockerfile` is a symlink to the root `Dockerfile`).
+
 ---
 
 ## Problem

@@ -12,6 +12,38 @@ All three are configured to share the **same base model and LoRA target
 modules** (`Qwen/Qwen2.5-3B-Instruct`, `q_proj/k_proj/v_proj/o_proj`), so
 adapters produced by one stage drop straight into the next.
 
+## Deploy the Studio UI + GRPO on Hugging Face Spaces
+
+The **repo root `Dockerfile`** is the image HF Spaces build from. It is
+configured for:
+
+- **Docker** Space with a **GPU** (T4 or better; T4: set
+  `MEDUSA_GRPO_LOAD_IN_4BIT=1` in Space variables if you OOM).
+- **Default adapter:** `anubhavkamal/medusa-qwen-grpo` via `GRPO_MODEL_ID`
+  (same as `eval_grpo_olist.py` GRPO default).
+- **Base model:** `Qwen/Qwen2.5-3B-Instruct` via `BASE_MODEL_ID`.
+- **Predictor entrypoint:** `MEDUSA_GRPO_PREDICTOR=trainer.grpo_predictor_hub:predict`.
+
+**HF_TOKEN (when you need it)**
+
+- **Not required** for a public adapter + public base, if the Hub download
+  succeeds without auth.
+- **Add as a Space *Secret* named `HF_TOKEN`** when:
+  - the base model is **gated** (you must accept the license on the model
+    card, then a token is needed for the container to download), or
+  - **`anubhavkamal/medusa-qwen-grpo` is private**, or
+  - downloads return **401 / 403** in the Space **Logs**.
+
+**After the build goes green:** open
+`https://<your-space>.hf.space/medusa/studio`, select agent **GRPO
+Trained**, and run **Auto-run**. The first GRPO action may take a long
+time (model download + load).
+
+**Canonical image:** the repo **root** `Dockerfile` (also visible as
+`hf_space/Dockerfile` — a **symlink** to the same file; see
+[`hf_space/README.md`](../hf_space/README.md)). The file
+`trainer/Dockerfile.hub_predictor` is an older **reference** only.
+
 ## SFT on Olist (the polished-demo recipe)
 
 The Olist generator + the rule-based expert solver collectively produce a
