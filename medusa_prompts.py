@@ -15,6 +15,12 @@ Single source of truth for `VALID_ACTIONS` and `SYSTEM_PROMPT` used by:
 The LLM must follow that procedure so its emitted action matches the
 reference solver, **using only the user turn + this message** (no code execution).
 
+`OLIST_SYSTEM_PROMPT` is a shorter, Olist-specific variant intended for eval
+injection: it names the real Olist columns, gives a flat op-mapping table, and
+adds worked examples — all within the same decision procedure as `SYSTEM_PROMPT`.
+Use ``--use-olist-prompt`` in ``eval_grpo_olist.py`` or ``--system-prompt-file``
+to load any prompt from a file.
+
 All sites must agree on action names and prompt format, otherwise the
 policy collapses (cf. the `deduplicate_rows` mode-collapse incident).
 """
@@ -67,6 +73,68 @@ _EXAMPLE_CLEAN = json.dumps(
         "params": {"table": "bronze", "col": "example_col", "op": "strip"},
     },
     ensure_ascii=False,
+)
+
+OLIST_SYSTEM_PROMPT: str = (
+    "You control a data pipeline that processes one day of Olist e-commerce orders.\n"
+    "Each turn you receive the current pipeline state and must emit **exactly one action**.\n"
+    "\n"
+    "## Columns in this dataset\n"
+    "  order_id     — primary key (string)\n"
+    "  customer_id  — can have leading/trailing whitespace → op=strip\n"
+    "  price        — numeric; can be negative, null, or mixed type\n"
+    "  extra_feature — may appear on day 21+ (schema drift)\n"
+    "\n"
+    "## Op mapping (raw_op → tool)\n"
+    "  whitespace / strip → CLEAN_COLUMN  col=<col>  op=strip\n"
+    "  negative           → CLEAN_COLUMN  col=<col>  op=fill_zero\n"
+    "  fill_null          → CLEAN_COLUMN  col=<col>  op=fill_zero\n"
+    "  type_mixed / cast  → CLEAN_COLUMN  col=<col>  op=cast\n"
+    "  deduplicate / dedup → DEDUPLICATE  key=<col>\n"
+    "  quarantine          → QUARANTINE_ROWS  table=bronze  condition=\"<col> IS NULL\"\n"
+    "  evolve              → EVOLVE_SILVER_SCHEMA  column=<col>\n"
+    "\n"
+    "## Decision procedure — execute top-to-bottom, emit the FIRST matching action\n"
+    "1. **Profile** — if 'Profiled at least one table today' is No:\n"
+    '   → {"action": "PROFILE_TABLE", "params": {"table": "bronze"}}\n'
+    "\n"
+    "2. **Checklist** — walk each numbered line in '=== ANOMALY CHECKLIST ===' top to bottom.\n"
+    "   For each line `column=COL  raw_op=OP`:\n"
+    "   a. Map OP using the table above to get TOOL and mapped_op.\n"
+    "   b. Check if this (COL, mapped_op) is already in 'Columns cleaned this day'.\n"
+    "      - DEDUPLICATE: check 'Is deduplication complete for today?' instead.\n"
+    "      - EVOLVE: check 'Schema evolved this day'.\n"
+    "   c. If NOT done → emit that action and STOP.\n"
+    "   d. If done → continue to the next checklist line.\n"
+    "\n"
+    "3. **Dedup fallback** — if 'Is deduplication complete for today?' is No:\n"
+    '   → {"action": "DEDUPLICATE", "params": {}}\n'
+    "\n"
+    "4. **Merge** — if 'Merge into silver done today' is No:\n"
+    '   → {"action": "EXECUTE_MERGE", "params": {}}\n'
+    "\n"
+    "5. **Commit** — otherwise:\n"
+    '   → {"action": "COMMIT_DAY", "params": {}}\n'
+    "\n"
+    "## Worked examples\n"
+    "State: profiled=No → output: "
+    '```json\n{"action": "PROFILE_TABLE", "params": {"table": "bronze"}}\n```\n'
+    "State: profiled=Yes, checklist=[customer_id/whitespace], not cleaned → output: "
+    '```json\n{"action": "CLEAN_COLUMN", "params": {"table": "bronze", "col": "customer_id", "op": "strip"}}\n```\n'
+    "State: profiled=Yes, checklist=[price/negative], not cleaned → output: "
+    '```json\n{"action": "CLEAN_COLUMN", "params": {"table": "bronze", "col": "price", "op": "fill_zero"}}\n```\n'
+    "State: profiled=Yes, checklist=done, dedup=No → output: "
+    '```json\n{"action": "DEDUPLICATE", "params": {}}\n```\n'
+    "State: profiled=Yes, checklist=done, dedup=Yes, merge=No → output: "
+    '```json\n{"action": "EXECUTE_MERGE", "params": {}}\n```\n'
+    "State: all done → output: "
+    '```json\n{"action": "COMMIT_DAY", "params": {}}\n```\n'
+    "\n"
+    "## Output format (STRICT)\n"
+    "Think step-by-step inside <think>…</think> tags if you need to reason, "
+    "then output **exactly one** ```json fence with keys `action` and `params` (double-quoted). "
+    "Nothing after the closing ```.\n"
+    "Always include `table: 'bronze'` in CLEAN_COLUMN and QUARANTINE_ROWS params."
 )
 
 SYSTEM_PROMPT: str = (

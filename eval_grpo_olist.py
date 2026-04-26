@@ -41,7 +41,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from medusa_prompts import SYSTEM_PROMPT, VALID_ACTIONS  # noqa: E402
+from medusa_prompts import OLIST_SYSTEM_PROMPT, SYSTEM_PROMPT, VALID_ACTIONS  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,6 +116,25 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional path to save full results as JSON",
     )
+
+    prompt_group = parser.add_mutually_exclusive_group()
+    prompt_group.add_argument(
+        "--use-olist-prompt",
+        action="store_true",
+        default=False,
+        help=(
+            "Replace the generic SYSTEM_PROMPT with OLIST_SYSTEM_PROMPT: a shorter, "
+            "Olist-specific prompt with concrete column examples and CoT guidance. "
+            "Recommended when the GRPO model struggles on day-1 (no retraining needed)."
+        ),
+    )
+    prompt_group.add_argument(
+        "--system-prompt-file",
+        default="",
+        metavar="PATH",
+        help="Load a custom system prompt from a plain-text file (overrides both defaults).",
+    )
+
     return parser.parse_args()
 
 
@@ -176,17 +195,35 @@ def load_model_and_tokenizer(args: argparse.Namespace):
 # ---------------------------------------------------------------------------
 
 
+def resolve_system_prompt(args: argparse.Namespace) -> str:
+    """Return the system prompt to use for this eval run."""
+    if getattr(args, "system_prompt_file", ""):
+        path = Path(args.system_prompt_file)
+        if not path.exists():
+            raise FileNotFoundError(f"--system-prompt-file not found: {path}")
+        prompt = path.read_text(encoding="utf-8").strip()
+        print(f"[prompt] loaded custom system prompt from {path}  ({len(prompt)} chars)")
+        return prompt
+    if getattr(args, "use_olist_prompt", False):
+        print(f"[prompt] using OLIST_SYSTEM_PROMPT  ({len(OLIST_SYSTEM_PROMPT)} chars)")
+        return OLIST_SYSTEM_PROMPT
+    print(f"[prompt] using default SYSTEM_PROMPT  ({len(SYSTEM_PROMPT)} chars)")
+    return SYSTEM_PROMPT
+
+
 def generate_action(
     model,
     tokenizer,
     prompt_text: str,
     args: argparse.Namespace,
+    system_prompt: str = "",
 ) -> str:
     """Run one forward pass and return the raw generated text."""
     import torch
 
+    active_prompt = system_prompt or SYSTEM_PROMPT
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": active_prompt},
         {"role": "user", "content": prompt_text},
     ]
 
@@ -310,6 +347,7 @@ def run_one_day(
     tokenizer,
     args: argparse.Namespace,
     use_expert: bool = False,
+    system_prompt: str = "",
 ) -> Dict[str, Any]:
     """Run one day of the 30-day gauntlet and return per-day stats.
 
@@ -354,7 +392,7 @@ def run_one_day(
             raw_text = json.dumps({"action": action.action, "params": action.params})
             parse_err = None
         else:
-            raw_text = generate_action(model, tokenizer, prompt_text, args)
+            raw_text = generate_action(model, tokenizer, prompt_text, args, system_prompt=system_prompt)
             action, parse_err = parse_action(raw_text)
 
         if parse_err:
@@ -407,6 +445,7 @@ def run_episode(
     args: argparse.Namespace,
     use_expert: bool = False,
     label: str = "GRPO",
+    system_prompt: str = "",
 ) -> Dict[str, Any]:
     from scenarios import OlistDayGenerator
     from server.medusa_env import MedusaEnv
@@ -440,6 +479,7 @@ def run_episode(
             tokenizer=tokenizer,
             args=args,
             use_expert=use_expert,
+            system_prompt=system_prompt,
         )
         per_day.append(day_stats)
         total_reward += day_stats["sum_reward"]
@@ -585,6 +625,11 @@ def main() -> None:
             print(f"[auth] HF login skipped: {e}")
 
     # ------------------------------------------------------------------
+    # Resolve system prompt (once, shared across all runs)
+    # ------------------------------------------------------------------
+    active_system_prompt = resolve_system_prompt(args)
+
+    # ------------------------------------------------------------------
     # Load GRPO model
     # ------------------------------------------------------------------
     model, tokenizer = load_model_and_tokenizer(args)
@@ -598,6 +643,7 @@ def main() -> None:
         args=args,
         use_expert=False,
         label="GRPO",
+        system_prompt=active_system_prompt,
     )
 
     # ------------------------------------------------------------------
@@ -611,6 +657,7 @@ def main() -> None:
             args=args,
             use_expert=True,
             label="Expert",
+            system_prompt=active_system_prompt,
         )
 
     # ------------------------------------------------------------------
