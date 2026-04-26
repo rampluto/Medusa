@@ -589,6 +589,98 @@ def row_width_score(profile: FrameProfile, column_count: int) -> tuple[float, di
     return 1.0 - bad_width_ratio, detail
 
 
+def score_dataframe(
+    df: pd.DataFrame,
+    name: str = "dataframe",
+    unique_column: str | None = None,
+) -> dict[str, Any]:
+    """Score an in-memory DataFrame using the same pipeline as :func:`score_csv`.
+
+    The DataFrame is converted to the string-typed shape that the scoring
+    helpers expect (header from ``df.columns``, all values as strings, missing
+    cells normalised to empty strings).
+    """
+    if df is None or df.empty:
+        return {
+            "file": name,
+            "score": 0.0,
+            "passed": False,
+            "component_scores": {key: 0.0 for key in DEFAULT_WEIGHTS},
+            "weights": DEFAULT_WEIGHTS,
+            "details": {
+                "rows": 0,
+                "columns": int(df.shape[1]) if df is not None else 0,
+                "column_names": list(df.columns) if df is not None else [],
+                "row_width": {"bad_width_rows": 0, "bad_width_ratio": 0.0},
+            },
+        }
+
+    header = [str(col) for col in df.columns]
+    column_count = len(header)
+    raw_frame = df.copy()
+    raw_frame.columns = range(column_count)
+    string_frame = raw_frame.astype(object).where(raw_frame.notna(), "")
+    for col in string_frame.columns:
+        string_frame[col] = string_frame[col].map(lambda v: "" if v is None else str(v))
+    row_count = int(len(string_frame))
+
+    rows = normalize_frame(string_frame, column_count)
+    profile = build_frame_profile(rows, row_count)
+
+    row_width, row_width_details = row_width_score(profile, column_count)
+    readability = row_width if header else 0.0
+
+    component_scores: dict[str, float] = {"readability": clamp(readability)}
+    details: dict[str, Any] = {
+        "rows": row_count,
+        "columns": column_count,
+        "column_names": header,
+        "row_width": row_width_details,
+    }
+
+    component_functions = {
+        "completeness": lambda: completeness_score(profile, column_count),
+        "uniqueness": lambda: uniqueness_score(profile),
+        "type_consistency": lambda: type_consistency_score(header, profile),
+        "date_format_sanity": lambda: date_format_sanity_score(header, profile),
+        "column_quality": lambda: column_quality_score(header),
+        "string_cleanliness": lambda: string_cleanliness_score(profile, column_count),
+        "numeric_sanity": lambda: numeric_sanity_score(header, profile),
+    }
+
+    for component_name, scorer in component_functions.items():
+        score, detail = scorer()
+        component_scores[component_name] = clamp(score)
+        details[component_name] = detail
+
+    overall = sum(component_scores[k] * DEFAULT_WEIGHTS[k] for k in DEFAULT_WEIGHTS)
+
+    if unique_column and unique_column in df.columns:
+        col_values = df[unique_column].fillna("").astype(str).str.strip()
+        null_mask = col_values.str.lower().isin(NULL_MARKERS)
+        duplicate_mask = col_values[~null_mask].duplicated(keep="first")
+        passed_unique = int(null_mask.sum()) == 0 and int(duplicate_mask.sum()) == 0
+        component_scores["required_unique_column"] = 1.0 if passed_unique else 0.0
+        details["required_unique_column"] = {
+            "column": unique_column,
+            "passed": passed_unique,
+            "checked_values": int(len(col_values)),
+            "null_values": int(null_mask.sum()),
+            "duplicate_values": int(duplicate_mask.sum()),
+        }
+        if not passed_unique:
+            overall = 0.0
+
+    return {
+        "file": name,
+        "score": rounded(clamp(overall)),
+        "passed": clamp(overall) >= 0.80,
+        "component_scores": {k: rounded(v) for k, v in component_scores.items()},
+        "weights": DEFAULT_WEIGHTS,
+        "details": details,
+    }
+
+
 def score_csv(
     path: Path,
     show_progress: bool = False,

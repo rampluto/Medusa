@@ -2223,3 +2223,817 @@ body[data-page="audit"] .audit-line.is-bad {
   background: rgba(255, 243, 221, 0.04);
   border-top: 1px solid var(--page-border, rgba(255,243,221,0.12));
 }
+
+/* =========================================================================
+   30-Day Gauntlet Calendar (Variant A — Fog-of-War)  v2
+   Tiles reveal progressively as the agent reaches each day.
+   ========================================================================= */
+
+.gauntlet {
+  --g-tile-radius: 12px;
+  --g-success: #287447;
+  --g-success-soft: rgba(40, 116, 71, 0.16);
+  --g-warn: #b07a1b;
+  --g-warn-soft: rgba(176, 122, 27, 0.18);
+  --g-danger: #8d3325;
+  --g-danger-soft: rgba(141, 51, 37, 0.18);
+  --g-teal: #0f6c68;
+  --g-teal-soft: rgba(15, 108, 104, 0.16);
+  --g-ink: #2c1c10;
+  --g-line: rgba(83, 53, 30, 0.14);
+  --g-line-strong: rgba(83, 53, 30, 0.24);
+
+  margin-top: 1.1rem;
+  padding: 1.4rem 1.5rem 1.3rem;
+  border: 1px solid var(--g-line);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle at 92% -10%, rgba(180, 80, 45, 0.08), transparent 24rem),
+    radial-gradient(circle at 5% 110%, rgba(15, 108, 104, 0.07), transparent 26rem),
+    linear-gradient(180deg, rgba(255, 252, 245, 0.92), rgba(248, 240, 224, 0.85));
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 22px 40px rgba(71, 40, 19, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.gauntlet::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(73, 49, 30, 0.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(73, 49, 30, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+  mask-image: radial-gradient(circle at 50% 30%, black, transparent 80%);
+  opacity: 0.5;
+}
+
+.gauntlet > * { position: relative; z-index: 1; }
+
+/* ── Header (title + KPIs) ────────────────────────────────────────── */
+
+.gauntlet__header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 1.4rem 2.2rem;
+  align-items: end;
+  margin-bottom: 1.1rem;
+}
+
+.gauntlet__heading { min-width: 0; }
+
+.gauntlet__eyebrow {
+  display: inline-block;
+  font-size: 0.66rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--g-teal);
+  background: rgba(15, 108, 104, 0.08);
+  border: 1px solid rgba(15, 108, 104, 0.18);
+  padding: 0.28rem 0.6rem;
+  border-radius: 999px;
+  margin-bottom: 0.55rem;
+}
+
+.gauntlet__title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 1.5rem;
+  letter-spacing: 0.005em;
+  color: var(--g-ink);
+}
+
+.gauntlet__subtitle {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  max-width: 64ch;
+  line-height: 1.45;
+}
+
+.gauntlet__kpis {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.55rem;
+  align-self: start;
+}
+
+.gauntlet-kpi {
+  min-width: 7.6rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--g-line);
+  background: rgba(255, 252, 245, 0.85);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.gauntlet-kpi__label {
+  font-size: 0.66rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.gauntlet-kpi__value {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 1.15rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--g-ink);
+  line-height: 1.1;
+}
+
+.gauntlet-kpi--good .gauntlet-kpi__value { color: var(--g-success); }
+.gauntlet-kpi--warn .gauntlet-kpi__value { color: var(--g-warn); }
+.gauntlet-kpi--bad  .gauntlet-kpi__value { color: var(--g-danger); }
+
+/* ── Progress bar with trap markers ──────────────────────────────── */
+
+.gauntlet__progress {
+  position: relative;
+  height: 6px;
+  margin: 0 0.25rem 1.5rem;
+  background: rgba(83, 53, 30, 0.08);
+  border-radius: 999px;
+  overflow: visible;
+}
+
+.gauntlet__progress-bar {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--g-teal), #1f8b85 60%, #2dab9b);
+  box-shadow: 0 0 12px rgba(15, 108, 104, 0.35);
+  transition: width 380ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gauntlet__progress-marks {
+  position: absolute;
+  inset: -7px 0 -7px 0;
+  pointer-events: none;
+}
+
+.gauntlet__progress-marks span {
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 18px;
+  margin-left: -1px;
+  margin-top: -9px;
+  background: rgba(180, 80, 45, 0.45);
+  border-radius: 1px;
+}
+
+/* ── Phase rows ──────────────────────────────────────────────────── */
+
+.gauntlet__phases {
+  display: flex;
+  flex-direction: column;
+  gap: 1.05rem;
+}
+
+.gauntlet__phase {
+  display: grid;
+  grid-template-columns: 7.5rem 1fr;
+  gap: 1rem;
+  align-items: center;
+}
+
+.gauntlet__phase-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.55rem 0.75rem;
+  border-left: 3px solid var(--g-teal);
+  background: rgba(15, 108, 104, 0.045);
+  border-radius: 0 12px 12px 0;
+}
+
+.gauntlet__phase-label span:first-child {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 0.92rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--g-ink);
+}
+
+.gauntlet__phase-label span:last-child {
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.gauntlet__row {
+  display: grid;
+  grid-template-columns: repeat(15, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+@media (max-width: 1240px) {
+  .gauntlet__phase { grid-template-columns: 6.5rem 1fr; gap: 0.8rem; }
+  .gauntlet__row { grid-template-columns: repeat(15, minmax(0, 1fr)); gap: 0.4rem; }
+}
+
+@media (max-width: 980px) {
+  .gauntlet__header { grid-template-columns: 1fr; }
+  .gauntlet__kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .gauntlet__phase { grid-template-columns: 1fr; gap: 0.55rem; }
+  .gauntlet__phase-label {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: baseline;
+    border-left: none;
+    border-top: 2px solid var(--g-teal);
+    border-radius: 0;
+    padding: 0.4rem 0.4rem;
+  }
+}
+
+@media (max-width: 640px) {
+  .gauntlet { padding: 1rem 1rem 1.1rem; }
+  .gauntlet__row { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  .gauntlet__kpis { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── Tile (the star of the show) ─────────────────────────────────── */
+
+.gauntlet-tile {
+  --g-tile-bg: rgba(83, 53, 30, 0.04);
+  --g-tile-border: var(--g-line);
+  --g-tile-day-color: var(--muted);
+
+  position: relative;
+  aspect-ratio: 1 / 1.18;
+  min-height: 60px;
+  padding: 0.4rem 0.3rem 0.45rem;
+  border: 1px solid var(--g-tile-border);
+  border-radius: var(--g-tile-radius);
+  background: var(--g-tile-bg);
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-items: center;
+  justify-items: center;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 260ms ease,
+    border-color 260ms ease,
+    box-shadow 260ms ease,
+    color 260ms ease;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.65) inset;
+}
+
+.gauntlet-tile:hover {
+  transform: translateY(-2px);
+  border-color: var(--g-line-strong);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.7) inset,
+    0 10px 22px rgba(71, 40, 19, 0.14);
+}
+
+.gauntlet-tile:focus-visible {
+  outline: 2px solid var(--g-teal);
+  outline-offset: 2px;
+}
+
+.gauntlet-tile__day {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--g-tile-day-color);
+  line-height: 1;
+}
+
+.gauntlet-tile__badge {
+  font-size: 1.35rem;
+  line-height: 1;
+  min-height: 1.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  filter: saturate(1.1);
+  transition: transform 320ms cubic-bezier(0.22, 1.4, 0.36, 1), font-size 220ms;
+}
+
+.gauntlet-tile__meta { display: none; } /* removed for legibility */
+
+/* Hidden default — soft dotted glyph */
+.gauntlet-tile.is-hidden {
+  --g-tile-bg: rgba(83, 53, 30, 0.035);
+  --g-tile-border: rgba(83, 53, 30, 0.12);
+  --g-tile-day-color: rgba(83, 53, 30, 0.35);
+}
+
+.gauntlet-tile.is-hidden .gauntlet-tile__badge::before {
+  content: "·";
+  color: rgba(83, 53, 30, 0.25);
+  font-size: 1.5rem;
+}
+
+/* Active — pulsing teal */
+.gauntlet-tile.is-active {
+  --g-tile-bg:
+    radial-gradient(circle at 50% 35%, rgba(15, 108, 104, 0.22), transparent 70%),
+    rgba(15, 108, 104, 0.10);
+  --g-tile-border: var(--g-teal);
+  --g-tile-day-color: var(--g-teal);
+  animation: gauntlet-pulse 1.5s ease-in-out infinite;
+  z-index: 2;
+}
+
+.gauntlet-tile.is-active .gauntlet-tile__badge::before {
+  content: "";
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--g-teal);
+  box-shadow: 0 0 0 4px rgba(15, 108, 104, 0.18);
+  display: inline-block;
+}
+
+@keyframes gauntlet-pulse {
+  0%, 100% { box-shadow: 0 1px 0 rgba(255,255,255,0.65) inset, 0 0 0 0 rgba(15, 108, 104, 0.0); }
+  50%      { box-shadow: 0 1px 0 rgba(255,255,255,0.65) inset, 0 0 0 6px rgba(15, 108, 104, 0.18); }
+}
+
+/* Probed — warm amber */
+.gauntlet-tile.is-probed {
+  --g-tile-bg: linear-gradient(155deg, rgba(176, 122, 27, 0.18), rgba(176, 122, 27, 0.06));
+  --g-tile-border: rgba(176, 122, 27, 0.55);
+  --g-tile-day-color: var(--g-warn);
+}
+
+/* Pass — green */
+.gauntlet-tile.is-pass {
+  --g-tile-bg: linear-gradient(160deg, rgba(40, 116, 71, 0.22), rgba(40, 116, 71, 0.06));
+  --g-tile-border: rgba(40, 116, 71, 0.6);
+  --g-tile-day-color: var(--g-success);
+  animation: gauntlet-flash 560ms cubic-bezier(0.22, 1.4, 0.36, 1) 1;
+}
+
+/* Partial — copper-amber */
+.gauntlet-tile.is-partial {
+  --g-tile-bg: linear-gradient(160deg, rgba(210, 166, 106, 0.32), rgba(210, 166, 106, 0.1));
+  --g-tile-border: rgba(180, 130, 60, 0.65);
+  --g-tile-day-color: var(--g-warn);
+}
+
+/* Fail — deep red */
+.gauntlet-tile.is-fail {
+  --g-tile-bg: linear-gradient(160deg, rgba(141, 51, 37, 0.28), rgba(141, 51, 37, 0.10));
+  --g-tile-border: rgba(141, 51, 37, 0.7);
+  --g-tile-day-color: var(--g-danger);
+  animation: gauntlet-shake 380ms ease-out 1;
+}
+
+@keyframes gauntlet-flash {
+  0%   { transform: scale(1.0); }
+  35%  { transform: scale(1.08); }
+  100% { transform: scale(1.0); }
+}
+
+@keyframes gauntlet-shake {
+  0%, 100% { transform: translateX(0); }
+  25%      { transform: translateX(-2px); }
+  50%      { transform: translateX(2px); }
+  75%      { transform: translateX(-1px); }
+}
+
+/* Boss tiles — taller, copper accent ribbon at the top */
+.gauntlet-tile--boss {
+  border-width: 1.5px;
+  background: var(--g-tile-bg);
+}
+
+.gauntlet-tile--boss::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 4px;
+  border-top-left-radius: var(--g-tile-radius);
+  border-top-right-radius: var(--g-tile-radius);
+  background: linear-gradient(90deg, var(--accent), #d2a66a, var(--accent));
+  opacity: 0.85;
+}
+
+.gauntlet-tile--boss .gauntlet-tile__day { font-weight: 800; }
+
+/* ── Footer (legend + status) ────────────────────────────────────── */
+
+.gauntlet__footer {
+  margin-top: 1.2rem;
+  padding-top: 1rem;
+  border-top: 1px dashed var(--g-line);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.85rem 1.5rem;
+  align-items: center;
+}
+
+@media (max-width: 980px) {
+  .gauntlet__footer { grid-template-columns: 1fr; }
+}
+
+.gauntlet__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem 1rem;
+  font-size: 0.74rem;
+  color: var(--muted);
+  align-items: center;
+}
+
+.gauntlet-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.gauntlet-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 4px;
+  border: 1px solid rgba(83, 53, 30, 0.18);
+  background: rgba(83, 53, 30, 0.08);
+  display: inline-block;
+}
+
+.gauntlet-swatch--active   { background: var(--g-teal-soft);    border-color: rgba(15, 108, 104, 0.5); }
+.gauntlet-swatch--probed   { background: var(--g-warn-soft);    border-color: rgba(176, 122, 27, 0.55); }
+.gauntlet-swatch--pass     { background: var(--g-success-soft); border-color: rgba(40, 116, 71, 0.6); }
+.gauntlet-swatch--partial  { background: rgba(210, 166, 106, 0.45); border-color: rgba(180, 130, 60, 0.7); }
+.gauntlet-swatch--fail     { background: var(--g-danger-soft);  border-color: rgba(141, 51, 37, 0.7); }
+
+.gauntlet__status {
+  min-height: 1.6rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+  letter-spacing: 0.005em;
+  text-align: right;
+}
+
+.gauntlet-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 999px;
+  background: rgba(255, 252, 245, 0.92);
+  border: 1px solid var(--g-line);
+  font-size: 0.82rem;
+  color: var(--g-ink);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
+}
+
+.gauntlet-status-pill.is-good {
+  border-color: rgba(40, 116, 71, 0.4);
+  background: linear-gradient(180deg, rgba(40, 116, 71, 0.08), rgba(40, 116, 71, 0.02));
+  color: var(--g-success);
+}
+
+.gauntlet-status-pill.is-bad {
+  border-color: rgba(141, 51, 37, 0.45);
+  background: linear-gradient(180deg, rgba(141, 51, 37, 0.10), rgba(141, 51, 37, 0.02));
+  color: var(--g-danger);
+}
+
+.gauntlet-status-pill.is-warn {
+  border-color: rgba(176, 122, 27, 0.45);
+  background: linear-gradient(180deg, rgba(176, 122, 27, 0.10), rgba(176, 122, 27, 0.02));
+  color: var(--g-warn);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Day Detail panel — pinned per-day audit (DQ + download)
+   Reuses the gauntlet's color tokens (--g-*) declared above.
+   ──────────────────────────────────────────────────────────────────── */
+
+.day-detail {
+  margin-top: 1rem;
+  padding: 1.1rem 1.25rem 1.2rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, var(--surface), var(--surface-soft)),
+    radial-gradient(1200px 200px at 50% -120px, rgba(15, 108, 104, 0.04), transparent 60%);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 8px 22px -16px rgba(31, 41, 55, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.day-detail__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.day-detail__heading { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
+
+.day-detail__eyebrow {
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.day-detail__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.day-detail__subtitle {
+  margin: 0.15rem 0 0;
+  font-size: 0.82rem;
+  color: var(--muted);
+  max-width: 64ch;
+}
+
+.day-detail__actions { display: flex; align-items: center; gap: 0.55rem; }
+
+.day-detail__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.day-detail__pill.is-pass {
+  border-color: rgba(40, 116, 71, 0.45);
+  background: linear-gradient(180deg, rgba(40, 116, 71, 0.10), rgba(40, 116, 71, 0.02));
+  color: var(--g-success);
+}
+
+.day-detail__pill.is-warn {
+  border-color: rgba(176, 122, 27, 0.45);
+  background: linear-gradient(180deg, rgba(176, 122, 27, 0.10), rgba(176, 122, 27, 0.02));
+  color: var(--g-warn);
+}
+
+.day-detail__pill.is-fail {
+  border-color: rgba(141, 51, 37, 0.5);
+  background: linear-gradient(180deg, rgba(141, 51, 37, 0.10), rgba(141, 51, 37, 0.02));
+  color: var(--g-danger);
+}
+
+.day-detail__pill.is-active {
+  border-color: rgba(15, 108, 104, 0.45);
+  background: linear-gradient(180deg, rgba(15, 108, 104, 0.10), rgba(15, 108, 104, 0.02));
+  color: var(--g-teal, #0f6c68);
+}
+
+.day-detail__pill .day-detail__pill-dot {
+  width: 6px; height: 6px; border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.button.button--sm {
+  padding: 0.32rem 0.7rem;
+  font-size: 0.78rem;
+  border-radius: 8px;
+}
+
+.day-detail__tabs {
+  display: flex;
+  gap: 0.25rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.05rem;
+  margin-bottom: 0.15rem;
+  flex-wrap: wrap;
+}
+
+.day-detail__tab {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  border-radius: 8px 8px 0 0;
+  transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+}
+
+.day-detail__tab:hover { color: var(--text); background: rgba(15, 108, 104, 0.05); }
+.day-detail__tab.is-active {
+  color: var(--g-teal, #0f6c68);
+  border-bottom-color: var(--g-teal, #0f6c68);
+}
+.day-detail__tab:focus-visible {
+  outline: 2px solid var(--g-teal, #0f6c68);
+  outline-offset: 2px;
+}
+
+.day-detail__body {
+  min-height: 220px;
+  position: relative;
+}
+
+.day-detail__empty {
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.92rem;
+  font-style: italic;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(15, 108, 104, 0.02);
+}
+
+.day-detail__pane { animation: dayDetailFadeIn 200ms ease; }
+
+@keyframes dayDetailFadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.day-detail__metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+.day-detail-metric {
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.day-detail-metric__label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.day-detail-metric__value {
+  font-size: 1.18rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.day-detail-metric__value.is-good { color: var(--g-success); }
+.day-detail-metric__value.is-warn { color: var(--g-warn); }
+.day-detail-metric__value.is-bad  { color: var(--g-danger); }
+
+.day-detail-metric__sub {
+  font-size: 0.74rem;
+  color: var(--muted);
+}
+
+.day-detail__notes {
+  margin-top: 0.85rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.day-detail__notes strong { color: var(--text); }
+
+.day-detail__notes .day-detail-callout {
+  margin-top: 0.55rem;
+  padding: 0.65rem 0.8rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(15, 108, 104, 0.04);
+}
+
+.day-detail__notes .day-detail-callout.is-fail {
+  border-color: rgba(141, 51, 37, 0.45);
+  background: rgba(141, 51, 37, 0.06);
+  color: var(--g-danger);
+}
+
+.day-detail__notes .day-detail-callout.is-warn {
+  border-color: rgba(176, 122, 27, 0.45);
+  background: rgba(176, 122, 27, 0.06);
+  color: var(--g-warn);
+}
+
+/* The Before/After tab reuses the existing .dq-comparison-grid widget */
+#day-detail-pane-dq .dq-comparison-grid { margin-top: 0.25rem; }
+
+.day-detail__download {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.day-detail__download-summary {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(40, 116, 71, 0.04);
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.day-detail__download-summary strong { color: var(--g-success); }
+
+.day-detail__download .button {
+  align-self: flex-start;
+}
+
+.day-detail__download-meta {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.day-detail__download-meta code {
+  background: rgba(15, 108, 104, 0.06);
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.day-detail__loading {
+  padding: 1.5rem 1rem;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.day-detail__error {
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(141, 51, 37, 0.45);
+  background: rgba(141, 51, 37, 0.06);
+  color: var(--g-danger);
+  border-radius: 10px;
+  font-size: 0.85rem;
+}
+
+/* The gauntlet tile becomes interactive (clickable) once it's at least probed.
+   We add a subtle pinned ring when its day is selected. */
+.gauntlet-tile.is-pinned {
+  outline: 2px solid var(--g-teal, #0f6c68);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(15, 108, 104, 0.18);
+}
+
+@media (max-width: 720px) {
+  .day-detail__header { flex-direction: column; align-items: stretch; }
+  .day-detail__actions { justify-content: flex-end; }
+}
+
+/* ── Trace list cross-linking ────────────────────────────────────── */
+
+.trace-list li.is-day-highlight {
+  background: rgba(15, 108, 104, 0.08);
+  border-radius: 8px;
+  transition: background 240ms ease;
+}
+
+.trace-list li[data-day-banner="true"] {
+  list-style: none;
+  margin-left: -1.1rem;
+  padding: 0.3rem 0.55rem;
+  margin-top: 0.4rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-top: 1px dashed var(--line);
+}
+
+.trace-list li[data-day-banner="true"]:first-child {
+  border-top: none;
+  margin-top: 0;
+}

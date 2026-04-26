@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MEDUSA</title>
-    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-heuristic-20260426" />
+    <link rel="stylesheet" href="/medusa-static/app.css?v=medusa-fast-day-detail-20260426d" />
   </head>
   <body data-page="studio">
     <div class="shell shell--wide">
@@ -28,6 +28,107 @@
           <div class="hero__status" id="hero-status">
             <span class="status-pill">Loading task catalog</span>
           </div>
+
+          <section class="gauntlet" id="gauntlet" aria-label="30-Day Gauntlet">
+            <header class="gauntlet__header">
+              <div class="gauntlet__heading">
+                <span class="gauntlet__eyebrow">Benchmark · Fog-of-war replay</span>
+                <h3 class="gauntlet__title">30-Day Gauntlet</h3>
+                <p class="gauntlet__subtitle">
+                  Tiles reveal as the agent reaches each day. The agent itself receives only the daily profile &mdash; no trap labels enter its observation.
+                </p>
+              </div>
+              <div class="gauntlet__kpis" id="gauntlet-kpis">
+                <div class="gauntlet-kpi">
+                  <span class="gauntlet-kpi__label">Days committed</span>
+                  <span class="gauntlet-kpi__value" id="gauntlet-kpi-days">0 / 30</span>
+                </div>
+                <div class="gauntlet-kpi">
+                  <span class="gauntlet-kpi__label">Cumulative reward</span>
+                  <span class="gauntlet-kpi__value" id="gauntlet-kpi-reward">0.0</span>
+                </div>
+                <div class="gauntlet-kpi">
+                  <span class="gauntlet-kpi__label">Outcome</span>
+                  <span class="gauntlet-kpi__value" id="gauntlet-kpi-outcome">—</span>
+                </div>
+              </div>
+            </header>
+
+            <div class="gauntlet__progress" aria-hidden="true">
+              <div class="gauntlet__progress-bar" id="gauntlet-progress-bar"></div>
+              <div class="gauntlet__progress-marks">
+                <span style="left: calc(8 / 30 * 100%)" data-day="8"></span>
+                <span style="left: calc(14 / 30 * 100%)" data-day="14"></span>
+                <span style="left: calc(21 / 30 * 100%)" data-day="21"></span>
+                <span style="left: calc(28 / 30 * 100%)" data-day="28"></span>
+              </div>
+            </div>
+
+            <div class="gauntlet__phases">
+              <div class="gauntlet__phase">
+                <div class="gauntlet__phase-label"><span>Phase 1</span><span>Days 1 – 15</span></div>
+                <div class="gauntlet__row" id="gauntlet-row-1" role="list"></div>
+              </div>
+              <div class="gauntlet__phase">
+                <div class="gauntlet__phase-label"><span>Phase 2</span><span>Days 16 – 30</span></div>
+                <div class="gauntlet__row" id="gauntlet-row-2" role="list"></div>
+              </div>
+            </div>
+
+            <footer class="gauntlet__footer">
+              <div class="gauntlet__legend" aria-label="Tile state legend">
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--hidden"></span>Unreached</span>
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--active"></span>Active</span>
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--probed"></span>Probed</span>
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--pass"></span>Committed</span>
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--partial"></span>Partial</span>
+                <span class="gauntlet-legend"><span class="gauntlet-swatch gauntlet-swatch--fail"></span>Crash</span>
+              </div>
+              <div class="gauntlet__status" id="gauntlet-status"></div>
+            </footer>
+          </section>
+
+          <!-- ── Day Detail Panel — pinned per-day audit (DQ + download) ── -->
+          <section class="day-detail" id="day-detail" aria-label="Day Detail">
+            <header class="day-detail__header">
+              <div class="day-detail__heading">
+                <span class="day-detail__eyebrow" id="day-detail-eyebrow">Day Detail</span>
+                <h3 class="day-detail__title" id="day-detail-title">Click any committed day to inspect it</h3>
+                <p class="day-detail__subtitle" id="day-detail-subtitle">
+                  Hover for a quick read; click a tile to pin its full data-quality report and download the cleaned snapshot.
+                </p>
+              </div>
+              <div class="day-detail__actions">
+                <span class="day-detail__pill" id="day-detail-pill">Idle</span>
+                <button type="button" id="day-detail-clear" class="button button--ghost button--sm" hidden>Unpin</button>
+              </div>
+            </header>
+
+            <nav class="day-detail__tabs" role="tablist" id="day-detail-tabs" hidden>
+              <button type="button" role="tab" data-tab="overview" class="day-detail__tab is-active" aria-selected="true">Overview</button>
+              <button type="button" role="tab" data-tab="dq" class="day-detail__tab" aria-selected="false">Before / After</button>
+              <button type="button" role="tab" data-tab="download" class="day-detail__tab" aria-selected="false">Download</button>
+            </nav>
+
+            <div class="day-detail__body" id="day-detail-body">
+              <div class="day-detail__empty" id="day-detail-empty">
+                Tiles light up the moment the agent commits a day. Pick one to see the bronze it ingested, the silver it produced, and the data-quality lift between them.
+              </div>
+
+              <div class="day-detail__pane" id="day-detail-pane-overview" hidden>
+                <div class="day-detail__metrics" id="day-detail-metrics"></div>
+                <div class="day-detail__notes" id="day-detail-notes"></div>
+              </div>
+
+              <div class="day-detail__pane" id="day-detail-pane-dq" hidden>
+                <div id="day-detail-dq"></div>
+              </div>
+
+              <div class="day-detail__pane" id="day-detail-pane-download" hidden>
+                <div class="day-detail__download" id="day-detail-download"></div>
+              </div>
+            </div>
+          </section>
 
           <div class="control-row">
             <label for="task-select">Task</label>
@@ -89,6 +190,6 @@
     </div>
 
     <script src="/medusa-static/shared.js"></script>
-    <script src="/medusa-static/studio.js?v=medusa-heuristic-20260426"></script>
+    <script src="/medusa-static/studio.js?v=medusa-fast-day-detail-20260426d"></script>
   </body>
 </html>

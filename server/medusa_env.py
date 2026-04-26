@@ -64,6 +64,28 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class _DaySnapshot:
+    """Per-day artifact captured at COMMIT_DAY (or on terminal crash).
+
+    Used by the Day Detail panel to render the before/after data-quality
+    report and serve a downloadable Silver snapshot for that day.
+    """
+
+    day: int
+    status: str  # "pass" | "partial" | "crash"
+    daily_raw: pd.DataFrame = field(default_factory=pd.DataFrame)
+    daily_cleaned: pd.DataFrame = field(default_factory=pd.DataFrame)
+    silver_after: pd.DataFrame = field(default_factory=pd.DataFrame)
+    silver_at_day_start_rows: int = 0
+    dq_before: Optional[Dict[str, Any]] = None
+    dq_after: Optional[Dict[str, Any]] = None
+    grader_passed: bool = False
+    grader_report: str = ""
+    cumulative_reward: float = 0.0
+    failure_reason: str = ""
+
+
+@dataclass
 class _EpisodeTables:
     """In-memory tables for one episode."""
 
@@ -78,6 +100,8 @@ class _EpisodeTables:
     # v4.0: daily raw batch (the Bronze data for the current day)
     daily_raw: pd.DataFrame = field(default_factory=pd.DataFrame)
     daily_cleaned: pd.DataFrame = field(default_factory=pd.DataFrame)
+    # v4.0+: per-day snapshots populated at COMMIT_DAY for the Day Detail panel.
+    day_snapshots: Dict[int, _DaySnapshot] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +454,13 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             self._state.stage = "failed"
             crash_pen = self._reward_engine.crash_reward(self._state.current_day)
             self._state.cumulative_reward += crash_pen
+            self._capture_day_snapshot(
+                self._state.current_day,
+                status="crash",
+                grader_passed=False,
+                grader_report="",
+                failure_reason="Max steps (10) exhausted before COMMIT_DAY.",
+            )
             return self._apply_transform(MedusaObservation(
                 message=f"[MAX STEPS REACHED] Terminal Crash triggered. ({crash_pen})",
                 done=True,
@@ -504,6 +535,13 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
                 done = True
                 self._state.stage = "failed"
                 step_message += " [TERMINAL CRASH: 3 Retries Exceeded]"
+                self._capture_day_snapshot(
+                    self._state.current_day,
+                    status="crash",
+                    grader_passed=False,
+                    grader_report="",
+                    failure_reason="Three consecutive blocked actions (retry budget exhausted).",
+                )
         else:
             self._state.last_block_reason = ""
 
@@ -515,6 +553,13 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             reward = self._reward_engine.crash_reward(self._state.current_day)
             done = True
             step_message += " [MAX STEPS REACHED]"
+            self._capture_day_snapshot(
+                self._state.current_day,
+                status="crash",
+                grader_passed=False,
+                grader_report="",
+                failure_reason="Max steps (10) exhausted before COMMIT_DAY.",
+            )
 
         self._state.cumulative_reward += reward
 
@@ -920,6 +965,51 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
     # Commit (terminal step per day or episode end)
     # ------------------------------------------------------------------
 
+    def _capture_day_snapshot(
+        self,
+        day: int,
+        *,
+        status: str,
+        grader_passed: bool,
+        grader_report: str,
+        failure_reason: str = "",
+    ) -> None:
+        """Record the per-day artefact so the Day Detail panel can render it.
+
+        Always copies the relevant DataFrames so later mutation of the live
+        episode tables does not retroactively change historical snapshots.
+
+        DQ scoring is intentionally **not** done here: it's relatively
+        expensive (multiple regex/datetime passes per call) and would run
+        for every committed day on every replay even if the UI never asks
+        for that day's report. The custom API computes DQ lazily, on demand,
+        via :func:`data_quality_score.score_dataframe` for the single day
+        the user is inspecting.
+        """
+        if day < 1 or day > 30:
+            return
+        daily_raw = self._tables.daily_raw.copy()
+        daily_cleaned = self._tables.daily_cleaned.copy()
+        if status in ("pass", "partial"):
+            silver_after = self._tables.silver.copy()
+        else:
+            silver_after = pd.DataFrame()
+
+        self._tables.day_snapshots[day] = _DaySnapshot(
+            day=day,
+            status=status,
+            daily_raw=daily_raw,
+            daily_cleaned=daily_cleaned,
+            silver_after=silver_after,
+            silver_at_day_start_rows=int(self._state.silver_row_count_at_day_start),
+            dq_before=None,
+            dq_after=None,
+            grader_passed=grader_passed,
+            grader_report=grader_report,
+            cumulative_reward=float(self._state.cumulative_reward),
+            failure_reason=failure_reason,
+        )
+
     def _do_commit(self, state_before: MedusaState) -> MedusaObservation:
         """Run grader then finalise the episode or advance the day."""
         scen = self._scenario
@@ -947,7 +1037,11 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
         self._state.silver_row_count = silver_after_len
         self._state.quarantine_row_count = len(self._tables.quarantine)
 
+        # Day under audit (used for the snapshot + governance log entry).
+        committed_day = state_before.current_day
+
         done = False
+        load_next_day = False
         if not grader_passed:
             # Failure = Terminal Crash
             reward = self._reward_engine.crash_reward(self._state.current_day)
@@ -955,26 +1049,19 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
             self._state.stage = "failed"
             step_message = f"COMMIT_DAY: Grader FAIL (Terminal Crash). Report: {grader_report}"
         else:
-            # Pass
+            # Pass — compute the commit reward (and any episode-completion bonus)
+            # *before* advancing the clock so the day snapshot we capture below
+            # reflects the cumulative reward including this day's contribution.
             reward = self._reward_engine.commit_reward(self._state.current_day)
             step_message = f"COMMIT_DAY: Grader PASS. Day {self._state.current_day} complete. (+{self._state.current_day})"
 
-            # Advance clock
-            self._state.current_day += 1
-            self._state.step_count = 0
-            self._state.retry_count = 0
-            self._state.cleaned_columns_today = []
-            self._state.profiled_tables_today = {}
-            self._state.silver_row_count_at_day_start = silver_after_len
-            self._state.did_dedup_today = False
-            self._state.did_merge_today = False
-
-            if self._state.current_day > 30:
+            next_day = self._state.current_day + 1
+            if next_day > 30:
                 done = True
                 self._state.stage = "committed"
 
-                # Day 30 Completion Quarantine ceiling
-                # Exclude Day 28 approved quarantine (null primary-key rows) per plan §5
+                # Day 30 Completion Quarantine ceiling — exclude Day 28
+                # approved quarantine (null primary-key rows) per plan §5.
                 tot_quar = self._state.total_quarantine_rows
                 day28_approved = self._state.day28_quarantine_rows
                 adjusted_quar = tot_quar - day28_approved
@@ -990,10 +1077,35 @@ class MedusaEnv(Environment[MedusaAction, MedusaObservation, MedusaState]):
                         f"excluding {day28_approved} Day 28 approved). No bonus."
                     )
             else:
-                # Load next day's batch
-                self._load_day_batch(self._state.current_day)
+                load_next_day = True
 
+        # Apply the reward *now* so the snapshot's `cumulative_reward` is final.
         self._state.cumulative_reward += reward
+
+        # Capture the per-day snapshot before any state advance / batch reload
+        # mutates `daily_raw`, `daily_cleaned`, or other day-scoped fields.
+        snapshot_status = "pass" if grader_passed else "crash"
+        self._capture_day_snapshot(
+            committed_day,
+            status=snapshot_status,
+            grader_passed=grader_passed,
+            grader_report=grader_report,
+            failure_reason="" if grader_passed else f"Grader rejected commit: {grader_report}",
+        )
+
+        # Advance the clock now that the snapshot is safely stored.
+        if grader_passed:
+            self._state.current_day += 1
+            self._state.step_count = 0
+            self._state.retry_count = 0
+            self._state.cleaned_columns_today = []
+            self._state.profiled_tables_today = {}
+            self._state.silver_row_count_at_day_start = silver_after_len
+            self._state.did_dedup_today = False
+            self._state.did_merge_today = False
+
+            if load_next_day:
+                self._load_day_batch(self._state.current_day)
 
         self._tables.governance_log.append({
             "step": self._state.step_idx,

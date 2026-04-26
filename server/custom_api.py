@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
+import io
 import json
 import logging
 import math
 import sys
 import tempfile
+import threading
+from collections import OrderedDict
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +19,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import pandas as pd
 from fastapi import APIRouter, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -639,6 +643,33 @@ def register_custom_routes(app: FastAPI) -> None:
     async def get_timeline(request: TraceRequest) -> Dict[str, Any]:
         return _with_replay(request, _build_timeline_payload)
 
+    @router.post("/run/day-detail/{day}")
+    async def get_day_detail(day: int, request: TraceRequest) -> Dict[str, Any]:
+        if day < 1 or day > 30:
+            raise HTTPException(status_code=422, detail="day must be in 1..30")
+        return _with_replay(
+            request,
+            lambda env, task, seed, observation, actions: _build_day_detail_payload(
+                env, task, seed, day,
+            ),
+        )
+
+    @router.post("/run/day-snapshot/{day}.csv")
+    async def get_day_snapshot_csv(day: int, request: TraceRequest) -> StreamingResponse:
+        if day < 1 or day > 30:
+            raise HTTPException(status_code=422, detail="day must be in 1..30")
+        csv_text, filename = _with_replay(
+            request,
+            lambda env, task, seed, observation, actions: _build_day_snapshot_csv(
+                env, task, seed, day,
+            ),
+        )
+        return StreamingResponse(
+            io.BytesIO(csv_text.encode("utf-8")),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
     @router.post("/run/analysis")
     async def get_analysis(request: TraceRequest) -> Dict[str, Any]:
         return _with_replay(request, _build_analysis_payload)
@@ -679,6 +710,73 @@ def register_custom_routes(app: FastAPI) -> None:
             return FileResponse(FRONTEND_DIR / "audit.html")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Replay LRU cache
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# The /api/run/* endpoints all share the same "rebuild env from scratch and
+# replay every action" pattern via `_with_replay`. For a 30-day gauntlet that's
+# ~135 env.step calls — comfortably 3+ seconds per request even for small
+# payloads. The Day Detail panel can fire several of these requests in quick
+# succession (one per pinned day, plus snapshot CSV downloads) and the
+# Episode Studio also calls timeline + preview + analysis + feature-vector
+# back-to-back, so a tiny cache pays for itself many times over.
+#
+# Cache key: stable digest of (task_id, seed, action_payload). Same trace ⇒
+# same env state ⇒ same answer for any builder. We store the *constructed*
+# env and the final observation so the builder can read mutable env state
+# (`env._tables`, `env.state`) directly — no expensive serialization round-trip.
+# Capacity is intentionally small (8 entries) since each env holds the full
+# 30-day silver layer plus per-day snapshots in memory.
+
+_REPLAY_CACHE_CAPACITY = 8
+_REPLAY_CACHE: "OrderedDict[str, Tuple[MedusaEnv, Any]]" = OrderedDict()
+_REPLAY_CACHE_LOCK = threading.Lock()
+
+
+def _replay_cache_key(task_id: Optional[str], seed: int, actions: List[MedusaAction]) -> str:
+    """Build a stable cache key from the replay inputs.
+
+    Action payloads are normalised to (action_name, sorted-params-json) so
+    semantically identical payloads collide regardless of dict ordering.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(f"task={task_id or '∅'}|seed={seed}|n={len(actions)}".encode())
+    for action in actions:
+        name = action.action.value if hasattr(action.action, "value") else str(action.action)
+        try:
+            params_blob = json.dumps(action.params or {}, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            params_blob = repr(action.params)
+        digest.update(b"|")
+        digest.update(name.encode())
+        digest.update(b":")
+        digest.update(params_blob.encode())
+    return digest.hexdigest()
+
+
+def _replay_cache_get(key: str) -> Optional[Tuple["MedusaEnv", Any]]:
+    with _REPLAY_CACHE_LOCK:
+        entry = _REPLAY_CACHE.get(key)
+        if entry is not None:
+            _REPLAY_CACHE.move_to_end(key)
+        return entry
+
+
+def _replay_cache_put(key: str, env: "MedusaEnv", observation: Any) -> None:
+    with _REPLAY_CACHE_LOCK:
+        _REPLAY_CACHE[key] = (env, observation)
+        _REPLAY_CACHE.move_to_end(key)
+        while len(_REPLAY_CACHE) > _REPLAY_CACHE_CAPACITY:
+            _, (evicted_env, _obs) = _REPLAY_CACHE.popitem(last=False)
+            close = getattr(evicted_env, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:  # noqa: BLE001 - close failures are non-fatal
+                    LOGGER.debug("replay_cache_close_failed", exc_info=True)
+
+
 def _with_replay(
     request: TraceRequest,
     builder: Any,
@@ -686,16 +784,32 @@ def _with_replay(
     task = TASKS.get(request.task_id) if request.task_id else None
     seed = task.seed if task is not None else request.seed
     assert seed is not None
+
+    cache_key = _replay_cache_key(request.task_id, seed, request.actions)
+    cached = _replay_cache_get(cache_key)
+    if cached is not None:
+        env, observation = cached
+        return builder(env, task, seed, observation, request.actions)
+
     env = MedusaEnv()
     try:
         observation = env.reset(seed=seed)
         for action in request.actions:
             observation = env.step(action)
-        return builder(env, task, seed, observation, request.actions)
-    finally:
+        result = builder(env, task, seed, observation, request.actions)
+    except Exception:
+        # On failure we never publish the env to the cache; it could be in a
+        # partially-replayed state. Best-effort close to free its tables.
         close = getattr(env, "close", None)
         if callable(close):
-            close()
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                LOGGER.debug("replay_env_close_failed", exc_info=True)
+        raise
+
+    _replay_cache_put(cache_key, env, observation)
+    return result
 
 
 def _serialize_task(task: Optional[Task]) -> Optional[Dict[str, Any]]:
@@ -1053,3 +1167,198 @@ def _pending_schema_columns(state: Any) -> List[str]:
 
 def _needs_merge_today(state: Any) -> bool:
     return not state.did_merge_today
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Day Detail panel helpers (per-day DQ + downloadable Silver snapshot)
+# ─────────────────────────────────────────────────────────────────────────────
+
+DAY_PREVIEW_ROWS = 25
+
+
+def _flatten_dq_for_grid(report: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Reshape a `score_dataframe` result to match what `renderDqGrid` expects.
+
+    The frontend's existing DQ grid renderer reads a flat shape (top-level
+    ``score``, ``rows``, ``missing_cells`` …) plus a nested ``component_scores``.
+    We project the structured ``details`` block down to that shape so the
+    Day Detail panel can reuse the exact same UI without duplicating logic.
+    """
+    if report is None:
+        return None
+    details = report.get("details") or {}
+    completeness = details.get("completeness") or {}
+    uniqueness = details.get("uniqueness") or {}
+    column_quality = details.get("column_quality") or {}
+    string_clean = details.get("string_cleanliness") or {}
+    numeric = details.get("numeric_sanity") or {}
+    return {
+        "score": report.get("score", 0.0),
+        "passed": report.get("passed", False),
+        "rows": details.get("rows", 0),
+        "columns": details.get("columns", 0),
+        "missing_cells": completeness.get("missing_cells", 0),
+        "missing_ratio": completeness.get("missing_ratio", 0.0),
+        "nan_values": numeric.get("nan_values", 0),
+        "null_values": numeric.get("null_values", 0),
+        "duplicate_rows": uniqueness.get("duplicate_rows", 0),
+        "duplicate_ratio": uniqueness.get("duplicate_ratio", 0.0),
+        "duplicate_column_names": column_quality.get("duplicate_column_names", 0),
+        "duplicate_column_groups": column_quality.get("duplicate_column_groups", {}),
+        "dirty_string_cells": string_clean.get("dirty_string_cells", 0),
+        "dirty_string_ratio": string_clean.get("dirty_string_ratio", 0.0),
+        "bad_numeric_cells": numeric.get("bad_numeric_cells", 0),
+        "component_scores": report.get("component_scores", {}),
+        "column_names": details.get("column_names", []),
+    }
+
+
+def _frame_preview(df: pd.DataFrame, limit: int = DAY_PREVIEW_ROWS) -> Dict[str, Any]:
+    if df is None or df.empty:
+        return {"columns": [], "rows": [], "total_rows": 0, "preview_rows": 0}
+    head = df.head(limit).copy()
+    rows = json.loads(head.to_json(orient="records", date_format="iso"))
+    return {
+        "columns": [str(c) for c in df.columns],
+        "rows": rows,
+        "total_rows": int(len(df)),
+        "preview_rows": int(len(head)),
+    }
+
+
+_TRAP_NAMES = {8: "Type Trap", 14: "OOM Trap", 21: "Schema Drift", 28: "Null Nuke"}
+
+
+def _score_dataframe_safe(df: pd.DataFrame, name: str) -> Optional[Dict[str, Any]]:
+    """Run the DQ scorer on demand; swallow optional-dep / runtime errors.
+
+    Called lazily by the day-detail endpoint so we only pay for one day's
+    worth of scoring per request, instead of all 30 committed days during
+    every replay (which is what eager scoring inside `_capture_day_snapshot`
+    used to do).
+    """
+    if df is None or df.empty:
+        return None
+    try:
+        dqs = importlib.import_module("data_quality_score")
+    except ModuleNotFoundError:
+        return None
+    score_fn = getattr(dqs, "score_dataframe", None)
+    if score_fn is None:
+        return None
+    try:
+        return score_fn(df, name=name)
+    except Exception:  # noqa: BLE001 - DQ scoring is non-critical UI sugar
+        LOGGER.debug("score_dataframe_failed name=%s", name, exc_info=True)
+        return None
+
+
+def _build_day_detail_payload(
+    env: MedusaEnv,
+    task: Optional[Task],
+    seed: int,
+    day: int,
+) -> Dict[str, Any]:
+    state = env.state
+    snapshot = env._tables.day_snapshots.get(day)
+    is_boss = day in _TRAP_NAMES
+
+    if snapshot is None:
+        # No snapshot exists. Decide whether the day was reached at all.
+        last_committed = max(env._tables.day_snapshots.keys(), default=0)
+        if day <= last_committed:
+            # Should not happen — committed days always have a snapshot.
+            status = "unknown"
+            failure_reason = ""
+        elif day == state.current_day and state.stage == "running":
+            status = "active"
+            failure_reason = ""
+        else:
+            status = "unreached"
+            failure_reason = ""
+        return {
+            "task": _serialize_task(task),
+            "seed": seed,
+            "day": day,
+            "status": status,
+            "is_boss_day": is_boss,
+            "trap_name": _TRAP_NAMES.get(day),
+            "failure_reason": failure_reason,
+            "grader_passed": None,
+            "grader_report": "",
+            "cumulative_reward": None,
+            "summary": {
+                "raw_rows": 0,
+                "cleaned_rows": 0,
+                "silver_rows_after": 0,
+                "silver_rows_at_day_start": 0,
+                "rows_added_to_silver": 0,
+            },
+            "dq_before": None,
+            "dq_after": None,
+            "preview": {"daily_raw": _frame_preview(pd.DataFrame()), "daily_cleaned": _frame_preview(pd.DataFrame())},
+            "download_available": False,
+        }
+
+    silver_after_rows = int(len(snapshot.silver_after))
+
+    # Lazy DQ scoring: compute (or reuse) only for the requested day. We
+    # memoise on the snapshot itself so repeat day-detail hits served from
+    # the replay cache are free; the env is shared across requests for the
+    # same trace, so subsequent clicks on the same day don't re-score.
+    if snapshot.status in {"pass", "partial"}:
+        if snapshot.dq_before is None:
+            snapshot.dq_before = _score_dataframe_safe(
+                snapshot.daily_raw, name=f"day{day:02d}_bronze"
+            )
+        if snapshot.dq_after is None:
+            snapshot.dq_after = _score_dataframe_safe(
+                snapshot.daily_cleaned, name=f"day{day:02d}_silver_delta"
+            )
+
+    return {
+        "task": _serialize_task(task),
+        "seed": seed,
+        "day": day,
+        "status": snapshot.status,
+        "is_boss_day": is_boss,
+        "trap_name": _TRAP_NAMES.get(day),
+        "failure_reason": snapshot.failure_reason,
+        "grader_passed": snapshot.grader_passed,
+        "grader_report": snapshot.grader_report,
+        "cumulative_reward": snapshot.cumulative_reward,
+        "summary": {
+            "raw_rows": int(len(snapshot.daily_raw)),
+            "cleaned_rows": int(len(snapshot.daily_cleaned)),
+            "silver_rows_after": silver_after_rows,
+            "silver_rows_at_day_start": snapshot.silver_at_day_start_rows,
+            "rows_added_to_silver": max(silver_after_rows - snapshot.silver_at_day_start_rows, 0),
+        },
+        "dq_before": _flatten_dq_for_grid(snapshot.dq_before),
+        "dq_after": _flatten_dq_for_grid(snapshot.dq_after),
+        "preview": {
+            "daily_raw": _frame_preview(snapshot.daily_raw),
+            "daily_cleaned": _frame_preview(snapshot.daily_cleaned),
+        },
+        "download_available": snapshot.status in {"pass", "partial"} and silver_after_rows > 0,
+    }
+
+
+def _build_day_snapshot_csv(
+    env: MedusaEnv,
+    task: Optional[Task],
+    seed: int,
+    day: int,
+) -> Tuple[str, str]:
+    snapshot = env._tables.day_snapshots.get(day)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"No snapshot for day {day}.")
+    if snapshot.status not in {"pass", "partial"} or snapshot.silver_after.empty:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Day {day} has no committed Silver snapshot to download.",
+        )
+    csv_text = snapshot.silver_after.to_csv(index=False)
+    task_id = task.id if task is not None else f"seed{seed}"
+    filename = f"medusa_{task_id}_day{day:02d}_silver.csv"
+    return csv_text, filename
